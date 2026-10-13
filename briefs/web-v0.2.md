@@ -79,7 +79,7 @@ Each stage is accepted on its own criteria; a later stage's criteria are not tes
 
 **Stage B**
 - Each approval is attributable to a user and is recorded before the Development Cycle transition it authorizes.
-- A run can be traced to an Issue, branch, PR, commit and decision export.
+- A run that reaches delivery can be traced to an Issue, branch, PR, commit and decision export. A run without a PR is traced through its record in Elsewhere's store, marked as not exported.
 - Run history remains available after safe executor-artifact cleanup.
 - A retried or concurrent export neither duplicates nor drops decisions.
 
