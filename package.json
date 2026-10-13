@@ -1,0 +1,9 @@
+{
+  "name": "elsewhere-research",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "audit:public": "node scripts/audit-public.mjs",
+    "audit:negative": "node scripts/audit-negative.mjs"
+  }
+}
