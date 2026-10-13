@@ -37,6 +37,10 @@ No fixed number, taxonomy, or shape of branches will be imposed on an agent. Alt
 - Does exploring alternative paths produce better **real solutions** than investing the same resources in a single path?
 - Which decisions benefit from human taste, context and judgment, and at what cost?
 
+## Web interface prototype (planned)
+
+A [v0.1 implementation brief](briefs/web-v0.1.md) describes a small problem-first web UI that presents **existing Development Cycle capabilities** and its optional external Octopus adapter. The Decision Multiverse appears only as an honestly labeled **Coming soon** concept. No new decision engine or operational integration is claimed or authorized by the brief.
+
 ## Research documents
 
 - [Decision Multiverse roadmap](docs/ROADMAP.md) — staged milestones and acceptance criteria
