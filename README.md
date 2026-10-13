@@ -41,6 +41,8 @@ No fixed number, taxonomy, or shape of branches will be imposed on an agent. Alt
 
 A [v0.1 implementation brief](briefs/web-v0.1.md) describes a small problem-first web UI that presents **existing Development Cycle capabilities** and its optional external Octopus adapter. The Decision Multiverse appears only as an honestly labeled **Coming soon** concept. No new decision engine or operational integration is claimed or authorized by the brief.
 
+The [v0.2 product contract](briefs/web-v0.2.md) extends that prototype vision to GitHub accounts/repositories, decision-first supervision, bounded autonomous mode, audit trails and durable run history. These are **proposed staged capabilities**, not currently available features.
+
 ## Research documents
 
 - [Decision Multiverse roadmap](docs/ROADMAP.md) — staged milestones and acceptance criteria
