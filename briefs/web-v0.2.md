@@ -6,7 +6,7 @@
 
 Elsewhere starts from a **problem and a target repository**, not an engineering prompt. The user oversees **decisions and approvals**, not verbose agent prompting. Development Cycle remains the supervised state-machine owner and Octopus is an external, optional implementation adapter. The Decision Multiverse is not implemented: show only *Coming soon*, not a fake decision tree or predicted outcomes.
 
-**Execution location:** runs execute on the user's own machine, through the simplest install path available. No hosted execution is part of these stages.
+**Execution location:** runs execute on the user's own machine, through the simplest install path available. No hosted execution is part of these stages. How the Elsewhere UI reaches the user's local Development Cycle (a local app, or a local agent paired with a hosted UI) and the trust boundary between them are not designed yet; that design is a prerequisite for Stage B.
 
 ## First-class workflows
 
