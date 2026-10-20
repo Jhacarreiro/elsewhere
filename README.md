@@ -1,5 +1,7 @@
 # elsewhere.
 
+Explore how AI agents might help people examine multiple possible solutions before committing to a consequential decision. This is an early-stage research proposal, not a validated decision-replay or counterfactual engine.
+
 **Same same, but different.**
 
 *From problems to possibilities to outcomes.*
