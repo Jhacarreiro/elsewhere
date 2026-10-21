@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Jhacarreiro/elsewhere/schemas/decision-record.v0.schema.json",
+  "title": "Decision record v0",
+  "description": "One consequential decision in a development run, with its provenance. Proposal; see docs/DECISION_RECORD.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "run", "stage", "time", "decided_by", "question", "state", "chosen", "alternatives", "classification", "evidence", "producer"],
+  "properties": {
+    "schema_version": { "const": 0 },
+    "id": {
+      "type": "string",
+      "pattern": "^dec_[0-9a-f]{16}$",
+      "description": "Stable id: first 16 hex characters of sha256(run_id + newline + primary evidence pointer + newline + anchor)."
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id"],
+      "properties": {
+        "run_id": { "type": "string" },
+        "root_run_id": { "type": "string" },
+        "generation": { "type": "integer", "minimum": 0 },
+        "attempt_id": { "type": "string" },
+        "round": { "type": "integer", "minimum": 0, "description": "Review or correction round, when the decision belongs to one." }
+      }
+    },
+    "stage": {
+      "enum": ["planning", "plan_review", "implementation", "review", "correction", "final_validation", "delivery", "follow_up", "recovery", "other"]
+    },
+    "time": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "source"],
+      "properties": {
+        "value": { "type": ["string", "null"], "format": "date-time" },
+        "source": { "enum": ["artifact_field", "artifact_header", "file_mtime", "commit_time", "unknown"] }
+      }
+    },
+    "decided_by": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["human", "agent", "council", "control_plane", "adapter_rule", "unknown"] },
+        "role": { "type": "string", "description": "Seat or role as recorded, for example reviewer, synthesizer, implementer." },
+        "configured_model": { "type": "string" },
+        "runtime_model": { "type": "string", "description": "Only when the run recorded it; never copied from configuration." }
+      }
+    },
+    "question": { "type": "string", "minLength": 1, "maxLength": 500, "description": "What was decided, in one sentence." },
+    "state": {
+      "enum": ["decided", "pending", "not_completed", "superseded", "unknown"],
+      "description": "pending: asked, no answer recorded. not_completed: attempted, no result. superseded: replaced by a later record."
+    },
+    "chosen": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["summary"],
+      "description": "null unless state is decided or superseded.",
+      "properties": {
+        "option_id": { "type": "string" },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "executed": { "enum": ["yes", "no", "unknown"] },
+        "validated": { "enum": ["yes", "no", "unknown"] },
+        "outcome": { "$ref": "#/$defs/claim" }
+      }
+    },
+    "alternatives": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "items"],
+      "properties": {
+        "status": {
+          "enum": ["listed", "none_considered", "unknown"],
+          "description": "none_considered only when the source says no alternative was considered; unknown otherwise."
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["summary", "classification"],
+            "properties": {
+              "option_id": { "type": "string" },
+              "summary": { "type": "string", "minLength": 1, "maxLength": 500 },
+              "advantages": { "type": "array", "items": { "type": "string", "maxLength": 300 } },
+              "limitations": { "type": "array", "items": { "type": "string", "maxLength": 300 } },
+              "classification": { "$ref": "#/$defs/classification" },
+              "executed": { "const": "no", "description": "An alternative is a hypothesis until a later record shows it executed and validated." }
+            }
+          }
+        }
+      }
+    },
+    "rationale": {
+      "oneOf": [{ "$ref": "#/$defs/claim" }, { "type": "null" }],
+      "description": "null when no rationale was recorded. Never reconstructed from hidden reasoning."
+    },
+    "uncertainty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level"],
+      "properties": {
+        "level": { "enum": ["low", "medium", "high", "unknown"] },
+        "note": { "type": "string", "maxLength": 300 }
+      }
+    },
+    "relevance": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Inputs for the relevance filter. Each axis is unknown unless evidence supports a value.",
+      "properties": {
+        "impact": { "$ref": "#/$defs/level" },
+        "reversibility": { "enum": ["easy", "costly", "irreversible", "unknown"] },
+        "cost": { "$ref": "#/$defs/level" },
+        "uncertainty": { "$ref": "#/$defs/level" }
+      }
+    },
+    "classification": {
+      "$ref": "#/$defs/classification",
+      "description": "Classification of the record as a whole: the weakest classification among chosen, outcome and rationale."
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["artifact", "pointer", "sha256"],
+        "properties": {
+          "artifact": { "type": "string", "description": "Logical artifact name, for example intervention, review_debate, failure_classification." },
+          "pointer": { "type": "string", "description": "Path relative to the run or adapter root, plus #json-pointer or #Lstart-Lend." },
+          "root": { "enum": ["run", "adapter", "repository"] },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Hash of the source file when read." },
+          "excerpt": { "type": "string", "maxLength": 300, "description": "Short sanitized quote; optional." }
+        }
+      }
+    },
+    "supersedes": { "type": "array", "items": { "type": "string", "pattern": "^dec_[0-9a-f]{16}$" } },
+    "related": { "type": "array", "items": { "type": "string", "pattern": "^dec_[0-9a-f]{16}$" } },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "mode"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "mode": { "enum": ["emitted", "extracted"], "description": "emitted: written by the adapter at decision time. extracted: read from artifacts after the run." }
+      }
+    }
+  },
+  "$defs": {
+    "classification": { "enum": ["observed", "agent-stated", "post-hoc-inferred"] },
+    "level": { "enum": ["low", "medium", "high", "unknown"] },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "classification"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "classification": { "$ref": "#/$defs/classification" }
+      }
+    }
+  }
+}
