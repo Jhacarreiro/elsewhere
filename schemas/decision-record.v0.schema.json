@@ -56,11 +56,12 @@
     "chosen": {
       "type": ["object", "null"],
       "additionalProperties": false,
-      "required": ["summary"],
-      "description": "null unless state is decided or superseded.",
+      "required": ["summary", "classification"],
+      "description": "Required when state is decided or superseded; null otherwise.",
       "properties": {
         "option_id": { "type": "string" },
         "summary": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "classification": { "$ref": "#/$defs/classification", "description": "Classification of the chosen option itself, for example observed for a recorded human answer." },
         "executed": { "enum": ["yes", "no", "unknown"] },
         "validated": { "enum": ["yes", "no", "unknown"] },
         "outcome": { "$ref": "#/$defs/claim" }
@@ -68,6 +69,7 @@
     },
     "alternatives": {
       "type": "object",
+      "description": "listed requires at least one item; none_considered and unknown require none.",
       "additionalProperties": false,
       "required": ["status", "items"],
       "properties": {
@@ -127,7 +129,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["artifact", "pointer", "sha256"],
+        "required": ["artifact", "root", "pointer", "sha256"],
         "properties": {
           "artifact": { "type": "string", "description": "Logical artifact name, for example intervention, review_debate, failure_classification." },
           "pointer": { "type": "string", "description": "Path relative to the run or adapter root, plus #json-pointer or #Lstart-Lend." },
@@ -150,6 +152,18 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "state": { "enum": ["decided", "superseded"] } } },
+      "then": { "properties": { "chosen": { "type": "object" } } },
+      "else": { "properties": { "chosen": { "type": "null" } } }
+    },
+    {
+      "if": { "properties": { "alternatives": { "properties": { "status": { "const": "listed" } } } } },
+      "then": { "properties": { "alternatives": { "properties": { "items": { "minItems": 1 } } } } },
+      "else": { "properties": { "alternatives": { "properties": { "items": { "maxItems": 0 } } } } }
+    }
+  ],
   "$defs": {
     "classification": { "enum": ["observed", "agent-stated", "post-hoc-inferred"] },
     "level": { "enum": ["low", "medium", "high", "unknown"] },

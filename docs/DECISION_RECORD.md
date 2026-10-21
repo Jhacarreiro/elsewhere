@@ -15,12 +15,12 @@ An emitting adapter appends one record per line to `decisions.jsonl` in its atte
 
 ## Rules
 
-1. **Evidence first.** Every record points to at least one source file with its SHA-256, so a reader can check that the source has not changed since extraction.
-2. **Classify each claim.** `observed`: the artifact records it as a fact (a phase change, a matched rule, a recorded answer). `agent-stated`: an agent wrote it in its own output. `post-hoc-inferred`: the extractor concluded it. The record's overall classification is the weakest of its parts.
+1. **Evidence first.** Every record points to at least one source file, by root (`run`, `adapter` or `repository`), relative path and SHA-256, so a reader can find it and check that it has not changed since extraction.
+2. **Classify each claim.** `observed`: the artifact records it as a fact (a phase change, a matched rule, a recorded answer). `agent-stated`: an agent wrote it in its own output. `post-hoc-inferred`: the extractor concluded it. The chosen option, its outcome, the rationale and each alternative carry their own classification; the record's overall classification is the weakest of its parts.
 3. **Never invent reasoning.** `rationale` is null when nothing was written. Hidden reasoning is never reconstructed.
 4. **Unknown is not zero.** `alternatives.status` is `unknown` unless the source lists alternatives (`listed`) or says none was considered (`none_considered`). Any number of alternatives is valid, including zero. There are no fixed categories or option counts.
 5. **Alternatives are hypotheses.** An alternative is always `executed: "no"`. If a later run executes it, that run gets its own record.
-6. **Unfinished states are first-class.** `pending` is a question asked with no answer recorded. `not_completed` is an attempt that produced no result, such as a stalled correction round.
+6. **Unfinished states are first-class.** `pending` is a question asked with no answer recorded. `not_completed` is an attempt that produced no result, such as a stalled correction round. The schema enforces that `chosen` is set exactly when the state is `decided` or `superseded`, and that `alternatives.items` is non-empty exactly when the status is `listed`.
 7. **Time has a source.** `time.source` says whether the time came from a field in the artifact, a header, a commit or only the file time.
 8. **Stable ids.** The id is derived from the run id, the primary evidence pointer and an anchor, so extracting the same run twice gives the same ids.
 9. **Public examples are sanitized.** Excerpts are short, and records published in this repository must pass `npm run audit:public`.
