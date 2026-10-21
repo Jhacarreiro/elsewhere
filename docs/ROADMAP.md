@@ -1,6 +1,6 @@
 # Decision Multiverse — research roadmap
 
-**Status:** proposal; no feature implemented or results established. **Home:** experimental documentation in the Development Cycle project, not a claim about the existing product.
+**Status:** proposal; Phase 1 steps 1 and 2 are documented, nothing is implemented and no results are established. **Home:** Elsewhere research documentation, not a claim about the existing Development Cycle product.
 
 ## Vision
 
@@ -10,19 +10,19 @@ Solutions, not software output, are the unit of value. AI agents execute; humans
 
 ## Phase 0 — linear baseline (prerequisite)
 
-Every later comparison is against linear execution, so the linear cycle must first finish reliably on its own. Proposed criterion, to be confirmed before Phase 2:
+Every later comparison is against linear execution, so the linear cycle must first finish reliably on its own. The criterion is the Development Cycle [reliability baseline](https://github.com/Jhacarreiro/openclaw-development-cycle/blob/main/docs/reliability-baseline.md), summarized here:
 
-- a fixed, public, synthetic task with behavioral acceptance checks written before any run;
+- a fixed, meaningful real task chosen by the user, with behavioral acceptance checks written before any run; the task may stay private, and synthetic fixtures are only for deterministic tests;
 - repeated runs through the normal `development_cycle` flow reach a recorded `go`, `revise` or `stop` without an infrastructure-classified failure;
 - each run's evidence is complete: approved plan, delivery, mechanical validation and final decision;
 - duration, cost and interventions are recorded per run, so they can serve as the comparison baseline.
 
-These runs are also the first evaluation data for Phase 1. Runs from unrelated projects are not used as evidence.
+These runs are also the first evaluation data for Phase 1. Runs from unrelated projects are not used as evidence. Because the baseline task is private, Phase 1 reads its runs locally and publishes only sanitized examples.
 
 ## Phase 1 — decision provenance and post-run map (implementation target)
 
-1. Inspect existing event, plan, run, adapter and validation artifacts. Document provenance and gaps before changing code. Artifacts that already carry observed decisions include `intervention.json` with its recorded answer, `final_validation_response.md`, normalized plan versions and council synthesis output.
-2. Define a portable, additive decision record that any implementation adapter may emit optionally, so the map does not depend on one runner (Octopus can be the first producer): stable ID, run/phase, time, source artifact pointer, what was decided, observable evidence, chosen option, locally relevant unchosen alternatives, concise trade-offs, uncertainty, and classification (`observed` / `agent-stated` / `post-hoc-inferred`). Never fabricate an agent's past reasoning.
+1. Inspect existing event, plan, run, adapter and validation artifacts. Document provenance and gaps before changing code. Done: [decision provenance inventory](DECISION_PROVENANCE.md). Artifacts that already carry observed decisions include `intervention.json` with its recorded answer, `final_validation_response.md`, normalized plan versions and council synthesis output.
+2. Proposed in [decision record v0](DECISION_RECORD.md) and [its JSON Schema](../schemas/decision-record.v0.schema.json). Define a portable, additive decision record that any implementation adapter may emit optionally, so the map does not depend on one runner (Octopus can be the first producer): stable ID, run/phase, time, source artifact pointer, what was decided, observable evidence, chosen option, locally relevant unchosen alternatives, concise trade-offs, uncertainty, and classification (`observed` / `agent-stated` / `post-hoc-inferred`). Never fabricate an agent's past reasoning.
 3. Extract consequential decisions from an existing finished run **read-only**, using observed evidence. Avoid logging every token or arbitrary implementation step. Include explicit 'unknown' when alternatives or rationale cannot be reconstructed.
 4. Produce a small portable JSON schema and readable visual map (Mermaid or static HTML). Progressive disclosure: one-line summaries first; show source, evidence, pros/cons and uncertainty on selection. Distinguish chosen/executed/validated, unexecuted hypotheses, and unknowns.
 5. Support a configurable relevance filter based on impact, reversibility, cost and uncertainty, without hard-coded option types or branch counts. Preserve the original record and provenance.
