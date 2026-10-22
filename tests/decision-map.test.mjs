@@ -261,3 +261,50 @@ test("the map escapes recorded text and labels alternatives as hypotheses", () =
   assert.match(html, /Hypothesis, not executed/);
   assert.match(html, /need attention/);
 });
+
+test("map-run writes the run's records and map into the run, and rerunning replaces them", () => {
+  const work = mkdtempSync(join(tmpdir(), "dm-maprun-"));
+  try {
+    const run = join(work, "run-a");
+    cpSync(runDir, run, { recursive: true });
+    const out = execFileSync(process.execPath, [new URL("../decision-map/map-run.mjs", import.meta.url).pathname, "--adapter", adapterDir, run], { encoding: "utf8" });
+    const summary = JSON.parse(out);
+    const expected = extract({ runDir: run, adapterDir });
+    const written = readFileSync(join(run, "decision-map", "decisions.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(summary.ok, true);
+    assert.equal(summary.records, expected.length);
+    assert.deepEqual(written.map((r) => r.id), expected.map((r) => r.id));
+    assert.ok(readFileSync(join(run, "decision-map", "map.html"), "utf8").includes(`Decision map: ${expected[0].run.run_id}`));
+    // The written output is not read back as run evidence.
+    assert.deepEqual(extract({ runDir: run, adapterDir }).map((r) => r.id), expected.map((r) => r.id));
+    execFileSync(process.execPath, [new URL("../decision-map/map-run.mjs", import.meta.url).pathname, run]);
+    const second = readFileSync(join(run, "decision-map", "decisions.jsonl"), "utf8").trim().split("\n");
+    assert.equal(second.length, extract({ runDir: run }).length);
+    assert.deepEqual(readdirSync(join(run, "decision-map")).sort(), ["decisions.jsonl", "map.html"]);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("map-run refuses an output folder that is a link and writes nothing through it", () => {
+  const work = mkdtempSync(join(tmpdir(), "dm-maprun-link-"));
+  try {
+    const run = join(work, "run-a");
+    const elsewhere = join(work, "elsewhere");
+    cpSync(runDir, run, { recursive: true });
+    cpSync(runDir, elsewhere, { recursive: true });
+    symlinkSync(elsewhere, join(run, "decision-map"));
+    const before = snapshot(elsewhere);
+    let failure;
+    try {
+      execFileSync(process.execPath, [new URL("../decision-map/map-run.mjs", import.meta.url).pathname, run], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    } catch (err) {
+      failure = err;
+    }
+    assert.ok(failure, "map-run should fail");
+    assert.equal(JSON.parse(failure.stdout).ok, false);
+    assert.deepEqual(snapshot(elsewhere), before);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});

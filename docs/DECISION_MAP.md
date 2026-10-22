@@ -15,10 +15,15 @@ Three small, dependency-free Node modules in [`decision-map/`](../decision-map):
 ```sh
 node decision-map/extract.mjs --run <run-dir> [--adapter <octopus-home>] > decisions.jsonl
 node decision-map/render.mjs --in decisions.jsonl --out map.html --title "Run map" [--min-impact high] [--exclude-unknown]
+node decision-map/map-run.mjs [--adapter <octopus-home>] <run-dir>
 npm test
 ```
 
 Other filter flags: `--min-uncertainty`, `--min-cost` (`low|medium|high`) and `--reversibility easy,costly,irreversible`. Pending and not-completed decisions are always shown, whatever the filter says, because those are the ones a person may need to act on.
+
+## Map at the end of every run
+
+`map-run.mjs` does both steps for one run and writes `decisions.jsonl` and `map.html` into a `decision-map/` folder inside the run directory, replacing any earlier map. It prints one JSON line (`ok`, `records`, `pending`), so it can be configured as the Development Cycle's run-end command, which appends the run directory as the last argument. It refuses a `decision-map` entry that is not a plain directory. Nothing is published: the map stays with the run's private state.
 
 ## What is extracted
 
