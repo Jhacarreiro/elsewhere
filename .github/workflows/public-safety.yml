@@ -12,3 +12,4 @@ jobs:
           node-version: '22'
       - run: npm run audit:public
       - run: npm run audit:negative
+      - run: npm test

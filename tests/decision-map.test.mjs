@@ -99,13 +99,15 @@ test("the seats' positions become listed alternatives; agreement leaves them unk
   assert.equal(scope.state, "unknown");
 });
 
-test("a failed corrections attempt, a council without quorum and repeated failure events are recorded as observed", () => {
+test("a failed corrections attempt, a council that never answered, a unanimous council without formal quorum and repeated failure events are recorded as observed", () => {
   const list = records();
   const attempt = byStage(list, "correction").find((r) => r.decided_by.kind === "control_plane");
   assert.equal(attempt.chosen.validated, "no");
   assert.match(attempt.chosen.outcome.text, /non-zero/);
-  const council = list.find((r) => r.decided_by.role === "code-review-council");
-  assert.equal(council.state, "not_completed");
+  const [silent, unanimous] = list.filter((r) => r.decided_by.role === "code-review-council");
+  assert.equal(silent.state, "not_completed");
+  assert.equal(unanimous.state, "decided", "enough answering seats is a verdict even when quorum is reported as not met");
+  assert.match(unanimous.chosen.summary, /All 3 answering seats: revise \(quorum not met\)/);
   assert.equal(byStage(list, "recovery").length, 1, "duplicate classification in the same phase is folded");
 });
 

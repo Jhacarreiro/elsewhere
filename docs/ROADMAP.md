@@ -1,6 +1,6 @@
 # Decision Multiverse — research roadmap
 
-**Status:** proposal; Phase 1 steps 1 and 2 are documented, nothing is implemented and no results are established. **Home:** Elsewhere research documentation, not a claim about the existing Development Cycle product.
+**Status:** proposal; Phase 1 steps 1 and 2 are documented and steps 3 to 5 have a working prototype ([decision map](DECISION_MAP.md)); step 6 and later phases are not started and no research results are established. **Home:** Elsewhere research documentation, not a claim about the existing Development Cycle product.
 
 ## Vision
 
@@ -23,10 +23,10 @@ These runs are also the first evaluation data for Phase 1. Runs from unrelated p
 
 1. Inspect existing event, plan, run, adapter and validation artifacts. Document provenance and gaps before changing code. Done: [decision provenance inventory](DECISION_PROVENANCE.md). Artifacts that already carry observed decisions include `intervention.json` with its recorded answer, `final_validation_response.md`, normalized plan versions and council synthesis output.
 2. Proposed in [decision record v0](DECISION_RECORD.md) and [its JSON Schema](../schemas/decision-record.v0.schema.json). Define a portable, additive decision record that any implementation adapter may emit optionally, so the map does not depend on one runner (Octopus can be the first producer): stable ID, run/phase, time, source artifact pointer, what was decided, observable evidence, chosen option, locally relevant unchosen alternatives, concise trade-offs, uncertainty, and classification (`observed` / `agent-stated` / `post-hoc-inferred`). Never fabricate an agent's past reasoning.
-3. Extract consequential decisions from an existing finished run **read-only**, using observed evidence. Avoid logging every token or arbitrary implementation step. Include explicit 'unknown' when alternatives or rationale cannot be reconstructed.
-4. Produce a small portable JSON schema and readable visual map (Mermaid or static HTML). Progressive disclosure: one-line summaries first; show source, evidence, pros/cons and uncertainty on selection. Distinguish chosen/executed/validated, unexecuted hypotheses, and unknowns.
-5. Support a configurable relevance filter based on impact, reversibility, cost and uncertainty, without hard-coded option types or branch counts. Preserve the original record and provenance.
-6. Demonstrate with one sanitized, realistic example run. Do not read production state into the public repository or embed deployment-specific values.
+3. Extract consequential decisions from an existing finished run **read-only**, using observed evidence. Avoid logging every token or arbitrary implementation step. Include explicit 'unknown' when alternatives or rationale cannot be reconstructed. Prototype: [`decision-map/extract.mjs`](../decision-map/extract.mjs).
+4. Produce a small portable JSON schema and readable visual map (Mermaid or static HTML). Progressive disclosure: one-line summaries first; show source, evidence, pros/cons and uncertainty on selection. Distinguish chosen/executed/validated, unexecuted hypotheses, and unknowns. Prototype: [`decision-map/render.mjs`](../decision-map/render.mjs), static HTML.
+5. Support a configurable relevance filter based on impact, reversibility, cost and uncertainty, without hard-coded option types or branch counts. Preserve the original record and provenance. Prototype: [`decision-map/filter.mjs`](../decision-map/filter.mjs).
+6. Demonstrate with one sanitized, realistic example run. Do not read production state into the public repository or embed deployment-specific values. Waiting for a baseline run that finishes on its own.
 
 **Out of scope for Phase 1:** live branching, automatic replay, unconstrained parallel execution, predicted outcomes stated as facts, hidden chain-of-thought extraction, production-runtime changes, new agent runs.
 

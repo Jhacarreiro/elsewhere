@@ -278,6 +278,11 @@ function controlPlaneRecords(reader, status, runId) {
       const seats = Array.isArray(summary.seats) ? summary.seats : [];
       const verdicts = seats.map((s) => `${s.persona || s.seat}: ${s.verdict || s.status || "no verdict"}`).join("; ");
       const met = summary.quorum?.met === true;
+      // Octopus can report quorum "not met" (for example, too few approving providers) while
+      // enough seats answered; the cycle then acts on their verdicts, so that is a decision.
+      const answered = seats.map((s) => String(s.verdict || "").toLowerCase()).filter(Boolean);
+      const verdict = answered.length && answered.every((v) => v === answered[0]) ? answered[0] : null;
+      const decided = met || answered.length >= Number(summary.quorum?.required_non_chair ?? Infinity);
       const ev = [evidence(reader, "run", rel, "#/quorum")];
       const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/.exec(stamp);
       out.push(finish(makeRecord(runId, {
@@ -285,8 +290,8 @@ function controlPlaneRecords(reader, status, runId) {
         time: m ? { value: `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`, source: "artifact_header" } : { value: null, source: "unknown" },
         decided_by: { kind: "council", role: "code-review-council" },
         question: "Does the council approve the delivered code?",
-        state: met ? "decided" : "not_completed",
-        chosen: met ? { summary: clip(`Quorum met. ${verdicts}`, 500), classification: "observed", executed: "unknown", validated: "unknown" } : null,
+        state: decided ? "decided" : "not_completed",
+        chosen: decided ? { summary: clip(`${verdict ? `All ${answered.length} answering seats: ${verdict}` : "Split verdicts"}${met ? "" : " (quorum not met)"}. ${verdicts}`, 500), classification: "observed", executed: "unknown", validated: "unknown" } : null,
         alternatives: UNKNOWN_ALTERNATIVES,
         rationale: { text: clip(`Status ${summary.status || "unknown"}; quorum ${met ? "met" : "not met"} (${summary.quorum?.received_non_chair ?? "?"} of ${summary.quorum?.required_non_chair ?? "?"} required non-chair responses). Seats: ${verdicts || "none"}`, 1000), classification: "observed" },
         evidence: ev,
