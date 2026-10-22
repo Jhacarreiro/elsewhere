@@ -154,15 +154,26 @@ test("the map shows each time in UTC whatever offset the artifact used", () => {
   assert.match(html, /2026-01-15 09:00Z/);
 });
 
-test("a run directory swapped for another one during extraction is no longer read", () => {
+test("a run directory swapped for another one during extraction keeps being read from the original", () => {
   withRunCopy((run, dir) => {
     const reader = createReader({ runDir: run });
-    assert.ok(reader.read("run", "validation_result.json"));
-    cpSync(run, join(dir, "other"), { recursive: true });
-    renameSync(run, join(dir, "moved"));
-    symlinkSync(join(dir, "other"), run);
-    assert.equal(reader.read("run", "status.json"), null);
-    assert.deepEqual(reader.list("run", ""), []);
+    try {
+      const before = reader.read("run", "validation_result.json");
+      assert.ok(before);
+      renameSync(run, join(dir, "moved"));
+      for (const replacement of ["directory", "symlink"]) {
+        rmSync(run, { recursive: true, force: true });
+        cpSync(join(dir, "moved"), join(dir, "other"), { recursive: true });
+        writeFileSync(join(dir, "other", "status.json"), JSON.stringify({ runId: "swapped-in" }));
+        if (replacement === "directory") renameSync(join(dir, "other"), run);
+        else symlinkSync(join(dir, "other"), run);
+        assert.equal(JSON.parse(reader.read("run", "status.json").text).runId, "example-run-a", replacement);
+        assert.ok(reader.list("run", "").includes("status.json"), replacement);
+        rmSync(join(dir, "other"), { recursive: true, force: true });
+      }
+    } finally {
+      reader.close();
+    }
   });
 });
 

@@ -42,7 +42,7 @@ The adapter home holds artifacts from many runs. A ledger counts as this run's w
 ## Rules that keep the map honest
 
 - Every record carries evidence: artifact pointer plus the file's sha256. A record whose source cannot be read is not emitted.
-- Only regular files that really live under the run or adapter directory are read, up to 16 MiB each. A symlink, at the file or in a parent directory, or a larger file counts as unreadable, so nothing from outside the given directories can reach the map. The run and adapter directories given on the command line must not be reached through a symlink, at the directory itself or any directory above it, the same rule the Development Cycle's own run reader applies.
+- Only regular files that really live under the run or adapter directory are read, up to 16 MiB each. A symlink, at the file or in a parent directory, or a larger file counts as unreadable, so nothing from outside the given directories can reach the map. The run and adapter directories given on the command line must not be reached through a symlink, at the directory itself or any directory above it, the same rule the Development Cycle's own run reader applies. Each directory is opened once and kept open; every file is then reached from that open directory one path component at a time, so renaming or replacing a directory while the extraction runs cannot redirect a read. This uses Linux `/proc/self/fd`, like the cycle's pinned reads, so the extractor runs on Linux only.
 - "Alternatives: unknown" means the source does not say. It is never shown as "none".
 - Alternatives are always labelled as hypotheses, not executed.
 - A record's classification is the weakest of its parts, alternatives included: an agent-written option makes the whole record agent-stated.
@@ -56,7 +56,6 @@ The adapter home holds artifacts from many runs. A ledger counts as this run's w
 
 ## Known limits
 
-- The reader checks each root's identity before every read, but another process that swaps a root for a different directory in the instant between that check and the file open can still get a file read. Closing that window needs descriptor-relative reads; it is not done because the extractor runs once, offline, on the operator's own disk.
 - `final_validation_response.md` is overwritten on every automatic council round, so only the last go/revise/stop is visible.
 - Correction reports linked by time window can still be wrong when two runs overlap in time on the same adapter home.
 - Relevance (impact, cost, reversibility) is set by simple rules per record type; it is a starting point, not a measurement.

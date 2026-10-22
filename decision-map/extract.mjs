@@ -4,7 +4,7 @@
 // It never writes into the run or adapter directories.
 import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync } from "node:fs";
-import { join, basename, resolve, sep } from "node:path";
+import { basename, resolve } from "node:path";
 
 export const PRODUCER = { name: "elsewhere-decision-extractor", version: "0.1.0", mode: "extracted" };
 
@@ -23,33 +23,58 @@ const epochTime = (seconds) => {
 
 export const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 
-// Pins a root: the path must not be reached through a symlink, and its identity is kept so a
-// root swapped for another directory during the extraction is noticed.
+const fdPath = (fd) => `/proc/self/fd/${fd}`;
+const DIR_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+
+// Pins a root as an open directory descriptor. Every later read walks from that descriptor one
+// path component at a time, so renaming or replacing the root path cannot redirect it. Like the
+// Development Cycle's own reader, a root reached through a symlink (at the root or any ancestor)
+// is refused. This needs Linux /proc/self/fd, as the cycle's pinned reads do.
 function pinRoot(flag, dir) {
+  if (!existsSync("/proc/self/fd")) throw new Error("The decision-map reader needs Linux /proc/self/fd.");
   const path = resolve(dir);
-  const info = lstatSync(path);
-  if (!info.isDirectory() || realpathSync(path) !== path) throw new Error(`${flag} must be a directory not reached through a symlink: ${dir}`);
-  return { path, dev: info.dev, ino: info.ino };
+  let fd = null;
+  try {
+    const expected = lstatSync(path);
+    fd = openSync(path, DIR_FLAGS);
+    const opened = fstatSync(fd);
+    if (!expected.isDirectory() || opened.dev !== expected.dev || opened.ino !== expected.ino || realpathSync(fdPath(fd)) !== path) throw new Error();
+    return { path, fd };
+  } catch {
+    if (fd !== null) closeSync(fd);
+    throw new Error(`${flag} must be a directory not reached through a symlink: ${dir}`);
+  }
 }
 
-function stillPinned(root) {
-  const info = lstatSync(root.path, { throwIfNoEntry: false });
-  return Boolean(info?.isDirectory()) && info.dev === root.dev && info.ino === root.ino && realpathSync(root.path) === root.path;
+// Opens rel under the pinned root without following any symlink on the way. Directories are
+// opened with O_DIRECTORY; the last component with the given flags. Returns a descriptor or null.
+function openUnder(root, rel, lastFlags) {
+  const parts = rel.split("/").filter((p) => p && p !== ".");
+  if (parts.some((p) => p === "..")) return null;
+  let dirFd = root.fd;
+  try {
+    for (let i = 0; i < parts.length; i += 1) {
+      const last = i === parts.length - 1;
+      const next = openSync(`${fdPath(dirFd)}/${parts[i]}`, last ? lastFlags : DIR_FLAGS);
+      if (dirFd !== root.fd) closeSync(dirFd);
+      dirFd = next;
+    }
+    return parts.length ? dirFd : null;
+  } catch {
+    if (dirFd !== root.fd) closeSync(dirFd);
+    return null;
+  }
 }
 
-// Reads one regular file that really lives under the pinned root: no symlinks (at the file or in
-// a parent directory), nothing larger than maxBytes. Anything else counts as unreadable.
+// Reads one regular file that lives under the pinned root: no symlinks (at the file or in a
+// parent directory), no special files, nothing larger than maxBytes. Anything else is unreadable.
 function readContained(root, rel, maxBytes) {
-  if (!stillPinned(root)) return null;
-  const real = realpathSync(join(root.path, rel));
-  if (real !== join(root.path, rel) || !real.startsWith(root.path + sep)) return null;
-  // Check before opening (a FIFO would block the open), then again on the descriptor.
-  const pre = lstatSync(real);
-  if (!pre.isFile() || pre.size > maxBytes) return null;
-  const fd = openSync(real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  // O_NONBLOCK so a FIFO cannot stall the open; the descriptor is then checked to be a file.
+  const fd = openUnder(root, rel, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  if (fd === null) return null;
   try {
     const st = fstatSync(fd);
-    if (!st.isFile() || st.size > maxBytes || st.ino !== pre.ino) return null;
+    if (!st.isFile() || st.size > maxBytes) return null;
     const buf = Buffer.alloc(st.size);
     let off = 0;
     while (off < st.size) {
@@ -63,25 +88,29 @@ function readContained(root, rel, maxBytes) {
   }
 }
 
-// One reader per extraction: caches file contents and hashes.
+// One reader per extraction: caches file contents and hashes. Call close() when done.
 export function createReader({ runDir, adapterDir = null, maxBytes = MAX_ARTIFACT_BYTES }) {
-  // Like the Development Cycle's own reader: a root reached through a symlink, at the root or
-  // any ancestor, is refused, so the tree read is always the one the path names.
-  const roots = { run: runDir && pinRoot("--run", runDir), adapter: adapterDir && pinRoot("--adapter", adapterDir) };
+  const roots = { run: runDir && pinRoot("--run", runDir) };
+  try {
+    roots.adapter = adapterDir && pinRoot("--adapter", adapterDir);
+  } catch (e) {
+    if (roots.run) closeSync(roots.run.fd);
+    throw e;
+  }
   const cache = new Map();
   const read = (root, rel) => {
     const pinned = roots[root];
     if (!pinned) return null;
-    const abs = join(pinned.path, rel);
-    if (!cache.has(abs)) {
+    const key = `${root}:${rel}`;
+    if (!cache.has(key)) {
       try {
         const f = readContained(pinned, rel, maxBytes);
-        cache.set(abs, f && { text: f.buf.toString("utf8"), sha: sha256(f.buf), mtime: f.mtime });
+        cache.set(key, f && { text: f.buf.toString("utf8"), sha: sha256(f.buf), mtime: f.mtime });
       } catch {
-        cache.set(abs, null);
+        cache.set(key, null);
       }
     }
-    return cache.get(abs);
+    return cache.get(key);
   };
   const json = (root, rel) => {
     const f = read(root, rel);
@@ -98,10 +127,18 @@ export function createReader({ runDir, adapterDir = null, maxBytes = MAX_ARTIFAC
   };
   const list = (root, rel = "") => {
     const pinned = roots[root];
-    if (!pinned || !stillPinned(pinned)) return [];
-    try { return readdirSync(join(pinned.path, rel)); } catch { return []; }
+    if (!pinned) return [];
+    if (!rel.split("/").some((p) => p && p !== ".")) {
+      try { return readdirSync(fdPath(pinned.fd)); } catch { return []; }
+    }
+    const fd = openUnder(pinned, rel, DIR_FLAGS);
+    if (fd === null) return [];
+    try { return readdirSync(fdPath(fd)); } catch { return []; } finally { closeSync(fd); }
   };
-  return { read, json, jsonl, list };
+  const close = () => {
+    for (const r of Object.values(roots)) if (r) closeSync(r.fd);
+  };
+  return { read, json, jsonl, list, close };
 }
 
 function evidence(reader, root, rel, pointer = "", excerpt = "") {
@@ -591,10 +628,15 @@ export function generatedAt(text) {
 
 export function extract({ runDir, adapterDir = null, maxBytes }) {
   const reader = createReader({ runDir, adapterDir, maxBytes });
-  const status = reader.json("run", "status.json");
-  if (!status) throw new Error(`No readable status.json in ${runDir}`);
-  const runId = String(status.runId || basename(runDir));
-  const records = [...controlPlaneRecords(reader, status, runId), ...(adapterDir ? octopusRecords(reader, status, runId) : [])];
+  let records;
+  try {
+    const status = reader.json("run", "status.json");
+    if (!status) throw new Error(`No readable status.json in ${runDir}`);
+    const runId = String(status.runId || basename(runDir));
+    records = [...controlPlaneRecords(reader, status, runId), ...(adapterDir ? octopusRecords(reader, status, runId) : [])];
+  } finally {
+    reader.close();
+  }
   // Records whose evidence could not be read are not emitted: every claim needs a source.
   return records
     .filter((r) => r.evidence.length > 0)
