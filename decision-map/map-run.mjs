@@ -1,38 +1,61 @@
 // Writes a finished run's decision records and map next to the run, for use as a run-end hook.
-import { lstatSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
-import { extract } from "./extract.mjs";
+import { closeSync, constants, mkdirSync, openSync, renameSync, writeSync } from "node:fs";
+import { basename } from "node:path";
+import { DIR_FLAGS, extract, fdPath, pinRoot } from "./extract.mjs";
 import { renderMap } from "./render.mjs";
 
 export const OUTPUT_DIR = "decision-map";
+const FILE_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
 
-// The output folder must be a real directory inside the run, never a link to somewhere else.
-function outputDir(runDir) {
-  const dir = join(runDir, OUTPUT_DIR);
-  let stat = null;
+// Opens the output folder from the pinned run directory. A link or a non-directory in its place is
+// refused (O_NOFOLLOW, O_DIRECTORY), and the open descriptor keeps later writes inside it even if
+// the path is swapped afterwards.
+export function openOutputDir(runRoot) {
+  const path = `${fdPath(runRoot.fd)}/${OUTPUT_DIR}`;
   try {
-    stat = lstatSync(dir);
+    mkdirSync(path);
   } catch (err) {
-    if (err.code !== "ENOENT") throw err;
+    if (err.code !== "EEXIST") throw err;
   }
-  if (!stat) mkdirSync(dir);
-  else if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`${dir} is not a plain directory`);
-  return dir;
+  try {
+    return openSync(path, DIR_FLAGS);
+  } catch {
+    throw new Error(`${runRoot.path}/${OUTPUT_DIR} is not a plain directory`);
+  }
 }
 
-// Each file is written beside its final name and renamed, so a reader never sees half a map.
-function writeAtomic(dir, name, text) {
-  const tmp = join(dir, `.${name}.${process.pid}.tmp`);
-  writeFileSync(tmp, text, { flag: "wx" });
-  renameSync(tmp, join(dir, name));
+// Each file is written beside its final name and renamed, both through the pinned folder, so a
+// reader never sees half a map and nothing is written outside the run.
+export function writeAtomic(dirFd, name, text) {
+  const tmp = `.${name}.${process.pid}.tmp`;
+  const fd = openSync(`${fdPath(dirFd)}/${tmp}`, FILE_FLAGS, 0o644);
+  try {
+    const buf = Buffer.from(text);
+    let off = 0;
+    while (off < buf.length) off += writeSync(fd, buf, off, buf.length - off);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(`${fdPath(dirFd)}/${tmp}`, `${fdPath(dirFd)}/${name}`);
 }
 
 export function mapRun({ runDir, adapterDir = null }) {
-  const records = extract({ runDir, adapterDir });
-  const dir = outputDir(runDir);
-  const runId = records[0]?.run?.run_id || basename(runDir);
-  writeAtomic(dir, "decisions.jsonl", records.map((r) => `${JSON.stringify(r)}\n`).join(""));
-  writeAtomic(dir, "map.html", renderMap(records, { title: `Decision map: ${runId}` }));
+  const runRoot = pinRoot("run directory", runDir);
+  let records;
+  let runId;
+  try {
+    records = extract({ runDir, adapterDir });
+    runId = records[0]?.run?.run_id || basename(runDir);
+    const outFd = openOutputDir(runRoot);
+    try {
+      writeAtomic(outFd, "decisions.jsonl", records.map((r) => `${JSON.stringify(r)}\n`).join(""));
+      writeAtomic(outFd, "map.html", renderMap(records, { title: `Decision map: ${runId}` }));
+    } finally {
+      closeSync(outFd);
+    }
+  } finally {
+    closeSync(runRoot.fd);
+  }
   return {
     ok: true,
     runId,

@@ -23,14 +23,14 @@ const epochTime = (seconds) => {
 
 export const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 
-const fdPath = (fd) => `/proc/self/fd/${fd}`;
-const DIR_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+export const fdPath = (fd) => `/proc/self/fd/${fd}`;
+export const DIR_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
 
 // Pins a root as an open directory descriptor. Every later read walks from that descriptor one
 // path component at a time, so renaming or replacing the root path cannot redirect it. Like the
 // Development Cycle's own reader, a root reached through a symlink (at the root or any ancestor)
 // is refused. This needs Linux /proc/self/fd, as the cycle's pinned reads do.
-function pinRoot(flag, dir) {
+export function pinRoot(flag, dir) {
   if (!existsSync("/proc/self/fd")) throw new Error("The decision-map reader needs Linux /proc/self/fd.");
   const path = resolve(dir);
   let fd = null;

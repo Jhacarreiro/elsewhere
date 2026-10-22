@@ -1,13 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { cpSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createReader, extract } from "../decision-map/extract.mjs";
 import { filterDecisions } from "../decision-map/filter.mjs";
 import { renderMap } from "../decision-map/render.mjs";
+import { openOutputDir, writeAtomic } from "../decision-map/map-run.mjs";
+import { pinRoot } from "../decision-map/extract.mjs";
 
 const fixtures = new URL("./fixtures/", import.meta.url).pathname;
 const runDir = join(fixtures, "run-a");
@@ -304,6 +306,32 @@ test("map-run refuses an output folder that is a link and writes nothing through
     assert.ok(failure, "map-run should fail");
     assert.equal(JSON.parse(failure.stdout).ok, false);
     assert.deepEqual(snapshot(elsewhere), before);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("map-run keeps writing into the folder it opened when the path is swapped for a link", () => {
+  const work = mkdtempSync(join(tmpdir(), "dm-maprun-swap-"));
+  try {
+    const run = join(work, "run-a");
+    const outside = join(work, "outside");
+    cpSync(runDir, run, { recursive: true });
+    cpSync(runDir, outside, { recursive: true });
+    const root = pinRoot("run directory", run);
+    const outFd = openOutputDir(root);
+    try {
+      renameSync(join(run, "decision-map"), join(run, "moved"));
+      symlinkSync(outside, join(run, "decision-map"));
+      const before = snapshot(outside);
+      writeAtomic(outFd, "map.html", "pinned");
+      assert.deepEqual(snapshot(outside), before);
+      assert.equal(readFileSync(join(run, "moved", "map.html"), "utf8"), "pinned");
+      assert.equal(existsSync(join(outside, "map.html")), false);
+    } finally {
+      closeSync(outFd);
+      closeSync(root.fd);
+    }
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
