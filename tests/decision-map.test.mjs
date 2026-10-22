@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extract } from "../decision-map/extract.mjs";
+import { createReader, extract } from "../decision-map/extract.mjs";
 import { filterDecisions } from "../decision-map/filter.mjs";
 import { renderMap } from "../decision-map/render.mjs";
 
@@ -152,6 +152,18 @@ test("the map shows each time in UTC whatever offset the artifact used", () => {
   const [first] = records();
   const html = renderMap([{ ...first, time: { value: "2026-01-15T10:00:00+01:00", source: "artifact_field" } }]);
   assert.match(html, /2026-01-15 09:00Z/);
+});
+
+test("a run directory swapped for another one during extraction is no longer read", () => {
+  withRunCopy((run, dir) => {
+    const reader = createReader({ runDir: run });
+    assert.ok(reader.read("run", "validation_result.json"));
+    cpSync(run, join(dir, "other"), { recursive: true });
+    renameSync(run, join(dir, "moved"));
+    symlinkSync(join(dir, "other"), run);
+    assert.equal(reader.read("run", "status.json"), null);
+    assert.deepEqual(reader.list("run", ""), []);
+  });
 });
 
 test("every evidence pointer names a real file whose content hash matches", () => {

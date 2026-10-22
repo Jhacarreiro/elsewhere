@@ -23,13 +23,26 @@ const epochTime = (seconds) => {
 
 export const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 
-// Reads one regular file that really lives under base: no symlinks (at the file or in a parent
-// directory), nothing larger than maxBytes. Anything else counts as unreadable.
-function readContained(base, rel, maxBytes) {
-  const abs = join(base, rel);
-  const realBase = realpathSync(base);
-  const real = realpathSync(abs);
-  if (real !== join(realBase, rel) || !real.startsWith(realBase + sep)) return null;
+// Pins a root: the path must not be reached through a symlink, and its identity is kept so a
+// root swapped for another directory during the extraction is noticed.
+function pinRoot(flag, dir) {
+  const path = resolve(dir);
+  const info = lstatSync(path);
+  if (!info.isDirectory() || realpathSync(path) !== path) throw new Error(`${flag} must be a directory not reached through a symlink: ${dir}`);
+  return { path, dev: info.dev, ino: info.ino };
+}
+
+function stillPinned(root) {
+  const info = lstatSync(root.path, { throwIfNoEntry: false });
+  return Boolean(info?.isDirectory()) && info.dev === root.dev && info.ino === root.ino && realpathSync(root.path) === root.path;
+}
+
+// Reads one regular file that really lives under the pinned root: no symlinks (at the file or in
+// a parent directory), nothing larger than maxBytes. Anything else counts as unreadable.
+function readContained(root, rel, maxBytes) {
+  if (!stillPinned(root)) return null;
+  const real = realpathSync(join(root.path, rel));
+  if (real !== join(root.path, rel) || !real.startsWith(root.path + sep)) return null;
   // Check before opening (a FIFO would block the open), then again on the descriptor.
   const pre = lstatSync(real);
   if (!pre.isFile() || pre.size > maxBytes) return null;
@@ -54,18 +67,15 @@ function readContained(base, rel, maxBytes) {
 export function createReader({ runDir, adapterDir = null, maxBytes = MAX_ARTIFACT_BYTES }) {
   // Like the Development Cycle's own reader: a root reached through a symlink, at the root or
   // any ancestor, is refused, so the tree read is always the one the path names.
-  for (const [flag, dir] of [["--run", runDir], ["--adapter", adapterDir]]) {
-    if (dir && realpathSync(resolve(dir)) !== resolve(dir)) throw new Error(`${flag} must not be reached through a symlink: ${dir}`);
-  }
+  const roots = { run: runDir && pinRoot("--run", runDir), adapter: adapterDir && pinRoot("--adapter", adapterDir) };
   const cache = new Map();
-  const roots = { run: runDir, adapter: adapterDir };
   const read = (root, rel) => {
-    const base = roots[root];
-    if (!base) return null;
-    const abs = join(base, rel);
+    const pinned = roots[root];
+    if (!pinned) return null;
+    const abs = join(pinned.path, rel);
     if (!cache.has(abs)) {
       try {
-        const f = readContained(base, rel, maxBytes);
+        const f = readContained(pinned, rel, maxBytes);
         cache.set(abs, f && { text: f.buf.toString("utf8"), sha: sha256(f.buf), mtime: f.mtime });
       } catch {
         cache.set(abs, null);
@@ -87,9 +97,9 @@ export function createReader({ runDir, adapterDir = null, maxBytes = MAX_ARTIFAC
     });
   };
   const list = (root, rel = "") => {
-    const base = roots[root];
-    if (!base) return [];
-    try { return readdirSync(join(base, rel)); } catch { return []; }
+    const pinned = roots[root];
+    if (!pinned || !stillPinned(pinned)) return [];
+    try { return readdirSync(join(pinned.path, rel)); } catch { return []; }
   };
   return { read, json, jsonl, list };
 }
