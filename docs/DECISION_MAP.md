@@ -1,4 +1,4 @@
-# Decision map (Phase 1 steps 3 to 5)
+# Decision map (Phase 1 steps 3 to 6)
 
 **Status:** working prototype. It reads finished runs and draws their decisions; it does not change any run, runner or runtime.
 
@@ -52,11 +52,11 @@ The adapter home holds artifacts from many runs. A ledger counts as this run's w
 ## Checked so far
 
 - Tests: `tests/decision-map.test.mjs` runs on a synthetic run in `tests/fixtures/`. It checks behaviour, not output snapshots: extraction leaves the source untouched, evidence hashes match, ids are stable, unrelated adapter artifacts are excluded, pending decisions are never filtered out, and recorded text is escaped in the HTML.
-- Two private baseline runs (22 and 81 records) were extracted locally and every record validated against the v0 schema. On the second run, the map shows in order what was earlier found only by reading its artifacts by hand: the corrections attempt failed after its third round, and the delivery that followed was partial. Whether that is faster for a person is not measured yet.
+- Two private baseline runs (22 and 81 records) were extracted locally and every record validated against the v0 schema. On the second run, the map shows in order what was earlier found only by reading its artifacts by hand: the corrections attempt failed after its third round, and the delivery that followed was partial. Whether that is faster for a person is not measured yet. The second run is published as a [sanitized example](../examples/baseline-round-8kv859/README.md) with its map.
 
 ## Known limits
 
 - `final_validation_response.md` is overwritten on every automatic council round, so only the last go/revise/stop is visible.
 - Correction reports linked by time window can still be wrong when two runs overlap in time on the same adapter home.
 - Relevance (impact, cost, reversibility) is set by simple rules per record type; it is a starting point, not a measurement.
-- No sanitized real example yet. Step 6 waits for a baseline run that finishes on its own.
+- The published example comes from a round that did not finish cleanly (its corrections failed and its delivery was partial). A round that finishes on its own would show the map on the ordinary path too.

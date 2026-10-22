@@ -1,6 +1,6 @@
 # Decision Multiverse — research roadmap
 
-**Status:** proposal; Phase 1 steps 1 and 2 are documented and steps 3 to 5 have a working prototype ([decision map](DECISION_MAP.md)); step 6 and later phases are not started and no research results are established. **Home:** Elsewhere research documentation, not a claim about the existing Development Cycle product.
+**Status:** proposal; Phase 1 steps 1 and 2 are documented and steps 3 to 5 have a working prototype ([decision map](DECISION_MAP.md)), demonstrated on one real run in step 6; later phases are not started and no research results are established. **Home:** Elsewhere research documentation, not a claim about the existing Development Cycle product.
 
 ## Vision
 
@@ -26,7 +26,7 @@ These runs are also the first evaluation data for Phase 1. Runs from unrelated p
 3. Extract consequential decisions from an existing finished run **read-only**, using observed evidence. Avoid logging every token or arbitrary implementation step. Include explicit 'unknown' when alternatives or rationale cannot be reconstructed. Prototype: [`decision-map/extract.mjs`](../decision-map/extract.mjs).
 4. Produce a small portable JSON schema and readable visual map (Mermaid or static HTML). Progressive disclosure: one-line summaries first; show source, evidence, pros/cons and uncertainty on selection. Distinguish chosen/executed/validated, unexecuted hypotheses, and unknowns. Prototype: [`decision-map/render.mjs`](../decision-map/render.mjs), static HTML.
 5. Support a configurable relevance filter based on impact, reversibility, cost and uncertainty, without hard-coded option types or branch counts. Preserve the original record and provenance. Prototype: [`decision-map/filter.mjs`](../decision-map/filter.mjs).
-6. Demonstrate with one sanitized, realistic example run. Do not read production state into the public repository or embed deployment-specific values. Waiting for a baseline run that finishes on its own.
+6. Demonstrate with one sanitized, realistic example run. Do not read production state into the public repository or embed deployment-specific values. The only exception is the reviewed example described in the [publication checklist](../PUBLICATION.md): [baseline round 8kv859](../examples/baseline-round-8kv859/README.md), the decision records of one finished run, published with the owner's consent. It is a failure-path example (its corrections failed and its delivery was partial); the Phase 0 reliability baseline is still unmet.
 
 **Out of scope for Phase 1:** live branching, automatic replay, unconstrained parallel execution, predicted outcomes stated as facts, hidden chain-of-thought extraction, production-runtime changes, new agent runs.
 

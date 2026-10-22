@@ -63,4 +63,4 @@ Experiments are **candidate briefs, not product features or validated research r
 
 ## Publication safety
 
-This repository contains portable public research materials, not an operator deployment. Never add internal network addresses, private runtime state, credentials, personal infrastructure layouts, or non-public execution artifacts. Run `npm run audit:public` before publication; CI enforces the same check. See [publication checklist](PUBLICATION.md).
+This repository contains portable public research materials, not an operator deployment. Never add internal network addresses, private runtime state, credentials, personal infrastructure layouts, or non-public execution artifacts; the one reviewed exception is listed in the [publication checklist](PUBLICATION.md). Run `npm run audit:public` before publication; CI enforces the same check. See [publication checklist](PUBLICATION.md).
