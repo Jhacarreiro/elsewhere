@@ -23,14 +23,14 @@ const epochTime = (seconds) => {
 
 export const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 
-const fdPath = (fd) => `/proc/self/fd/${fd}`;
-const DIR_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+export const fdPath = (fd) => `/proc/self/fd/${fd}`;
+export const DIR_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
 
 // Pins a root as an open directory descriptor. Every later read walks from that descriptor one
 // path component at a time, so renaming or replacing the root path cannot redirect it. Like the
 // Development Cycle's own reader, a root reached through a symlink (at the root or any ancestor)
 // is refused. This needs Linux /proc/self/fd, as the cycle's pinned reads do.
-function pinRoot(flag, dir) {
+export function pinRoot(flag, dir) {
   if (!existsSync("/proc/self/fd")) throw new Error("The decision-map reader needs Linux /proc/self/fd.");
   const path = resolve(dir);
   let fd = null;
@@ -89,12 +89,16 @@ function readContained(root, rel, maxBytes) {
 }
 
 // One reader per extraction: caches file contents and hashes. Call close() when done.
-export function createReader({ runDir, adapterDir = null, maxBytes = MAX_ARTIFACT_BYTES }) {
-  const roots = { run: runDir && pinRoot("--run", runDir) };
+// A caller that already pinned the run directory passes it as runRoot; the reader then reads from that
+// same descriptor and leaves closing it to the caller.
+export function createReader({ runDir, adapterDir = null, maxBytes = MAX_ARTIFACT_BYTES, runRoot = null }) {
+  const roots = { run: runRoot || (runDir && pinRoot("--run", runDir)) };
+  const owned = new Set(runRoot ? [] : ["run"]);
   try {
     roots.adapter = adapterDir && pinRoot("--adapter", adapterDir);
+    owned.add("adapter");
   } catch (e) {
-    if (roots.run) closeSync(roots.run.fd);
+    if (roots.run && owned.has("run")) closeSync(roots.run.fd);
     throw e;
   }
   const cache = new Map();
@@ -136,7 +140,7 @@ export function createReader({ runDir, adapterDir = null, maxBytes = MAX_ARTIFAC
     try { return readdirSync(fdPath(fd)); } catch { return []; } finally { closeSync(fd); }
   };
   const close = () => {
-    for (const r of Object.values(roots)) if (r) closeSync(r.fd);
+    for (const [name, r] of Object.entries(roots)) if (r && owned.has(name)) closeSync(r.fd);
   };
   return { read, json, jsonl, list, close };
 }
@@ -632,8 +636,8 @@ const instant = (r) => {
   return Number.isNaN(t) ? Infinity : t;
 };
 
-export function extract({ runDir, adapterDir = null, maxBytes }) {
-  const reader = createReader({ runDir, adapterDir, maxBytes });
+export function extract({ runDir, adapterDir = null, maxBytes, runRoot = null }) {
+  const reader = createReader({ runDir, adapterDir, maxBytes, runRoot });
   let records;
   try {
     const status = reader.json("run", "status.json");
