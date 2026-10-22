@@ -8,7 +8,7 @@
       "execution": {
         "phase": "ceremony",
         "role": "design-synthesizer",
-        "worktree": "/x/worktrees/other-attempt/integration"
+        "worktree": "/x/worktrees/attempt-impl-10/integration"
       },
       "artifacts": {
         "output": "/x/results/sync-result-1768035600-ZZZ.md"

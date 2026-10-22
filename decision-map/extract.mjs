@@ -3,7 +3,7 @@
 // adapter's results) -> decision records v0, one JSON object per line.
 // It never writes into the run or adapter directories.
 import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, openSync, readSync, readdirSync, realpathSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync } from "node:fs";
 import { join, basename, sep } from "node:path";
 
 export const PRODUCER = { name: "elsewhere-decision-extractor", version: "0.1.0", mode: "extracted" };
@@ -24,10 +24,13 @@ function readContained(base, rel, maxBytes) {
   const realBase = realpathSync(base);
   const real = realpathSync(abs);
   if (real !== join(realBase, rel) || !real.startsWith(realBase + sep)) return null;
-  const fd = openSync(real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  // Check before opening (a FIFO would block the open), then again on the descriptor.
+  const pre = lstatSync(real);
+  if (!pre.isFile() || pre.size > maxBytes) return null;
+  const fd = openSync(real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   try {
     const st = fstatSync(fd);
-    if (!st.isFile() || st.size > maxBytes) return null;
+    if (!st.isFile() || st.size > maxBytes || st.ino !== pre.ino) return null;
     const buf = Buffer.alloc(st.size);
     let off = 0;
     while (off < st.size) {
@@ -393,7 +396,9 @@ function octopusLedgers(reader, attemptIds) {
   for (const runName of reader.list("adapter", "runs")) {
     const ledger = reader.json("adapter", `runs/${runName}/run.json`);
     const seats = Array.isArray(ledger?.seats) ? ledger.seats : [];
-    const touches = seats.some((s) => attemptIds.some((a) => String(s.execution?.worktree || "").includes(a) || String(s.artifacts?.output || "").includes(a)));
+    // The attempt id must be a whole path segment: attempt-1 must not match attempt-10.
+    const segments = (p) => String(p || "").split(/[\\/]/);
+    const touches = seats.some((s) => [s.execution?.worktree, s.artifacts?.output].some((p) => segments(p).some((seg) => attemptIds.includes(seg))));
     if (touches) ledgers.push({ runName, seats });
   }
   return ledgers;
@@ -499,6 +504,7 @@ function octopusRecords(reader, status, runId) {
       if (!implementerStamps.has(stamp) && !inWindow) continue;
       const rel = `results/${name}`;
       const body = reader.read("adapter", rel);
+      if (!body) continue;
       const stalled = /Status:\s*STALLED/i.test(body.text);
       const ev = [evidence(reader, "adapter", rel)];
       out.push(finish(makeRecord(runId, {
@@ -521,14 +527,16 @@ function octopusRecords(reader, status, runId) {
     const name = `tangle-validation-${attempt}.md`;
     if (!results.has(name)) continue;
     const rel = `results/${name}`;
-    const body = reader.read("adapter", rel).text;
+    const file = reader.read("adapter", rel);
+    if (!file) continue;
+    const body = file.text;
     const gate = /Quality Gate:\s*([A-Z_-]+)/.exec(body)?.[1];
     const branch = /Decision Branch:\s*([\w-]+)/.exec(body)?.[1];
     if (!branch) continue;
     const ev = [evidence(reader, "adapter", rel, "#Decision-Branch")];
     out.push(finish(makeRecord(runId, {
       run: { ...run, attempt_id: attempt }, stage: "review",
-      time: generatedAt(body) ? { value: generatedAt(body), source: "artifact_header" } : { value: reader.read("adapter", rel).mtime, source: "file_mtime" },
+      time: generatedAt(body) ? { value: generatedAt(body), source: "artifact_header" } : { value: file.mtime, source: "file_mtime" },
       decided_by: { kind: "adapter_rule", role: "quality-gate" },
       question: "Proceed, retry or stop after the adapter's quality gate?",
       state: "decided",

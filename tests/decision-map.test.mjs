@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { extract } from "../decision-map/extract.mjs";
@@ -108,6 +109,22 @@ test("symlinked or oversized artifacts are not read", () => {
     const bounded = extract({ runDir: run, maxBytes: 4096 });
     assert.equal(bounded.filter((r) => r.stage === "delivery").length, 0, "a file over the limit is skipped");
     assert.ok(bounded.length > 0, "files under the limit are still read");
+  });
+});
+
+test("special files and rejected adapter results are skipped, not fatal", () => {
+  withRunCopy((run, dir) => {
+    unlinkSync(join(run, "final_validation_response.md"));
+    execFileSync("mkfifo", [join(run, "final_validation_response.md")]);
+    const adapter = join(dir, "octopus");
+    cpSync(adapterDir, adapter, { recursive: true });
+    for (const name of ["tangle-validation-attempt-impl-1.md", "tangle-review-corrections-1-1768472000.md"]) {
+      unlinkSync(join(adapter, "results", name));
+      symlinkSync(join(dir, "missing.md"), join(adapter, "results", name));
+    }
+    const list = extract({ runDir: run, adapterDir: adapter });
+    assert.ok(list.length > 0);
+    assert.equal(list.filter((r) => r.question.startsWith("Ship, revise or stop") || r.decided_by.role === "quality-gate").length, 0);
   });
 });
 
