@@ -4,7 +4,7 @@
 // It never writes into the run or adapter directories.
 import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync } from "node:fs";
-import { join, basename, sep } from "node:path";
+import { join, basename, resolve, sep } from "node:path";
 
 export const PRODUCER = { name: "elsewhere-decision-extractor", version: "0.1.0", mode: "extracted" };
 
@@ -52,9 +52,10 @@ function readContained(base, rel, maxBytes) {
 
 // One reader per extraction: caches file contents and hashes.
 export function createReader({ runDir, adapterDir = null, maxBytes = MAX_ARTIFACT_BYTES }) {
-  // The roots themselves must be real directories too, or a symlink could swap in another tree.
+  // Like the Development Cycle's own reader: a root reached through a symlink, at the root or
+  // any ancestor, is refused, so the tree read is always the one the path names.
   for (const [flag, dir] of [["--run", runDir], ["--adapter", adapterDir]]) {
-    if (dir && lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Error(`${flag} must not be a symlink: ${dir}`);
+    if (dir && realpathSync(resolve(dir)) !== resolve(dir)) throw new Error(`${flag} must not be reached through a symlink: ${dir}`);
   }
   const cache = new Map();
   const roots = { run: runDir, adapter: adapterDir };

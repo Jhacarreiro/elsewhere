@@ -42,7 +42,7 @@ The adapter home holds artifacts from many runs. A ledger counts as this run's w
 ## Rules that keep the map honest
 
 - Every record carries evidence: artifact pointer plus the file's sha256. A record whose source cannot be read is not emitted.
-- Only regular files that really live under the run or adapter directory are read, up to 16 MiB each. A symlink, at the file or in a parent directory, or a larger file counts as unreadable, so nothing from outside the given directories can reach the map. The run and adapter directories given on the command line are trusted as the operator chose them: they must not be symlinks themselves, but the path above them is the operator's own filesystem and is not checked. Everything inside them is treated as untrusted input.
+- Only regular files that really live under the run or adapter directory are read, up to 16 MiB each. A symlink, at the file or in a parent directory, or a larger file counts as unreadable, so nothing from outside the given directories can reach the map. The run and adapter directories given on the command line must not be reached through a symlink, at the directory itself or any directory above it, the same rule the Development Cycle's own run reader applies.
 - "Alternatives: unknown" means the source does not say. It is never shown as "none".
 - Alternatives are always labelled as hypotheses, not executed.
 - A record's classification is the weakest of its parts, alternatives included: an agent-written option makes the whole record agent-stated.

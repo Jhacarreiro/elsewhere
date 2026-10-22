@@ -131,7 +131,9 @@ test("special files and rejected adapter results are skipped, not fatal", () => 
 test("a symlinked run directory is refused and an impossible adapter stamp is unknown, not fatal", () => {
   withRunCopy((run, dir) => {
     symlinkSync(run, join(dir, "linked"));
-    assert.throws(() => extract({ runDir: join(dir, "linked") }), /must not be a symlink/);
+    assert.throws(() => extract({ runDir: join(dir, "linked") }), /through a symlink/);
+    symlinkSync(dir, join(dir, "parent-link"));
+    assert.throws(() => extract({ runDir: join(dir, "parent-link", "run") }), /through a symlink/, "an ancestor link is refused too");
     const adapter = join(dir, "octopus");
     cpSync(adapterDir, adapter, { recursive: true });
     const ledgerPath = join(adapter, "runs", "run-x", "run.json");
