@@ -1,0 +1,3 @@
+{"createdAt": "2026-01-15T10:50:00.000Z", "phase": "implementation_delivered", "classification": null}
+{"createdAt": "2026-01-15T11:10:00.000Z", "phase": "corrections_launched", "classification": {"failureClass": "runtime_observation_blocker", "severity": "warning", "autoStopRecommended": false, "recommendedAction": "Inspect the runtime observation before relaunching.", "matched": {"name": "runtime_alert", "pattern": "provider_processes_outside_observed_tree"}}}
+{"createdAt": "2026-01-15T11:20:00.000Z", "phase": "corrections_launched", "classification": {"failureClass": "runtime_observation_blocker", "severity": "warning", "recommendedAction": "Inspect the runtime observation before relaunching."}}

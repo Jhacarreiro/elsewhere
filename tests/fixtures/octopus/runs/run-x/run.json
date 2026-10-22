@@ -1,0 +1,58 @@
+{
+  "schema_version": "10.0",
+  "run_id": "run-x",
+  "seats": [
+    {
+      "seat_id": "sync-ceremony-a",
+      "timestamp": "2026-01-15T09:10:00Z",
+      "requested": {
+        "provider": "exampleprov",
+        "model": "example-model"
+      },
+      "execution": {
+        "phase": "ceremony",
+        "role": "design-synthesizer",
+        "worktree": ""
+      },
+      "artifacts": {
+        "output": "/x/results/sync-result-1768468200-AAA.md"
+      }
+    },
+    {
+      "seat_id": "spawn-review-r1-implementation-logic-reviewer-1768471200-octopus-tangle-review-marker.abc",
+      "timestamp": "2026-01-15T10:00:00Z",
+      "execution": {
+        "phase": "review",
+        "role": "implementation-logic-reviewer",
+        "worktree": "/x/worktrees/attempt-impl-1/integration"
+      },
+      "artifacts": {
+        "output": "/x/results/review-out.md"
+      }
+    },
+    {
+      "seat_id": "sync-impl-1",
+      "timestamp": "2026-01-15T10:20:00Z",
+      "execution": {
+        "phase": "tangle",
+        "role": "implementer",
+        "worktree": "/x/worktrees/attempt-impl-1/integration"
+      },
+      "artifacts": {
+        "output": "/x/results/sync-result-1768472000-BBB.md"
+      }
+    },
+    {
+      "seat_id": "sync-qg",
+      "timestamp": "2026-01-15T11:00:00Z",
+      "execution": {
+        "phase": "quality-gate",
+        "role": "code-reviewer",
+        "worktree": "/x/worktrees/attempt-impl-1/integration"
+      },
+      "artifacts": {
+        "output": "/x/results/sync-result-1768474800-CCC.md"
+      }
+    }
+  ]
+}

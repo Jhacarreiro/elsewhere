@@ -1,0 +1,26 @@
+{
+  "provider": "exampleprov:debater",
+  "decisions": [
+    {
+      "debate_id": "finding-1",
+      "decision": "include",
+      "reason": "Verified in code.",
+      "evidence": "src/a.ts:3",
+      "finding": {
+        "title": "Approval not bound to content",
+        "severity": "normal",
+        "verdict": "needs-debate"
+      }
+    },
+    {
+      "debate_id": "finding-2",
+      "decision": "exclude",
+      "reason": "Demonstrated false positive.",
+      "evidence": "src/c.ts:1",
+      "finding": {
+        "title": "False alarm",
+        "severity": "nit"
+      }
+    }
+  ]
+}

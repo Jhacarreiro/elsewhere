@@ -1,0 +1,27 @@
+{
+  "runId": "example-run-a",
+  "createdAt": "2026-01-15T09:00:00.000Z",
+  "startedAt": "2026-01-15T09:05:00.000Z",
+  "phase": "closed_partial",
+  "implementationAttemptId": "attempt-impl-1",
+  "canonicalPlanGit": {
+    "ok": true,
+    "commit": "abc1234"
+  },
+  "followUp": {
+    "fromRunId": "example-run-0",
+    "rootRunId": "example-run-0",
+    "generation": 1,
+    "pullRequest": {
+      "number": 7
+    },
+    "issues": [
+      {
+        "number": 3
+      },
+      {
+        "number": 4
+      }
+    ]
+  }
+}

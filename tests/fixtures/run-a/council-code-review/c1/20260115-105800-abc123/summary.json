@@ -1,0 +1,20 @@
+{
+  "status": "partial",
+  "quorum": {
+    "met": false,
+    "required_non_chair": 2,
+    "received_non_chair": 0
+  },
+  "seats": [
+    {
+      "persona": "security-auditor",
+      "verdict": "",
+      "status": "failed"
+    },
+    {
+      "persona": "code-reviewer",
+      "verdict": "revise",
+      "status": "ok"
+    }
+  ]
+}

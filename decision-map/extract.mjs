@@ -102,6 +102,7 @@ function finish(record) {
     record.chosen?.outcome?.classification,
     record.rationale?.classification,
     record.question_classification,
+    ...(record.alternatives?.items || []).map((item) => item.classification),
   );
   delete record.question_classification;
   if (!record.uncertainty) record.uncertainty = { level: "unknown" };
@@ -223,6 +224,33 @@ function controlPlaneRecords(reader, status, runId) {
     }, ev[0], `intervention:${value.id || ""}`)));
   }
 
+  // Runner attempts: what the control plane launched and how each one ended.
+  for (const [session, stage] of [["implementation_session", "implementation"], ["corrections_session", "correction"]]) {
+    for (const attempt of reader.list("run", `${session}/attempts`)) {
+      const rel = `${session}/attempts/${attempt}/status.json`;
+      const st = reader.json("run", rel);
+      if (!st) continue;
+      const ev = [evidence(reader, "run", rel, "#/status")];
+      const ended = st.status ? `${st.status}${st.exitCode != null ? ` (exit ${st.exitCode})` : ""}` : "unknown";
+      out.push(finish(makeRecord(runId, {
+        run: { ...run, attempt_id: attempt }, stage,
+        time: { value: st.createdAt || null, source: st.createdAt ? "artifact_field" : "unknown" },
+        decided_by: { kind: "control_plane" },
+        question: stage === "implementation" ? "Launch an implementation attempt for the approved plan." : "Launch a corrections attempt for the review feedback.",
+        state: "decided",
+        chosen: {
+          summary: clip(`Launched ${st.command || "the runner"}; it ended ${ended}${st.updatedAt ? ` at ${st.updatedAt}` : ""}.`, 500),
+          classification: "observed", executed: "yes",
+          validated: ["failed", "interrupted"].includes(st.status) ? "no" : "unknown",
+          outcome: { text: clip(st.message || ended, 1000), classification: "observed" },
+        },
+        alternatives: UNKNOWN_ALTERNATIVES,
+        rationale: null,
+        evidence: ev,
+      }, ev[0], `attempt:${attempt}`)));
+    }
+  }
+
   // Mechanical final validation.
   const validation = reader.json("run", "validation_result.json");
   if (validation?.decision) {
@@ -312,6 +340,14 @@ function controlPlaneRecords(reader, status, runId) {
 
 // ---------- Octopus adapter artifacts ----------
 
+function debateSummary(decision) {
+  const d = String(decision).toLowerCase();
+  if (["include", "retain", "keep", "confirm", "confirmed"].includes(d)) return "Keep the finding.";
+  if (["exclude", "drop", "dismiss", "reject", "rejected"].includes(d)) return "Drop the finding.";
+  return clip(decision, 500);
+}
+const toEpoch = (iso) => Math.floor(new Date(iso).getTime() / 1000);
+
 // Find the adapter run ledgers whose seats worked on one of this run's attempts.
 function octopusLedgers(reader, attemptIds) {
   const ledgers = [];
@@ -347,7 +383,8 @@ function octopusRecords(reader, status, runId) {
         const text = String(conflict);
         const [positions, resolution] = text.split(/\bResolution:\s*/);
         const parts = positions.split(/(?=\bSeats?\s+\d)/).map((p) => p.trim().replace(/[;.]\s*$/, "")).filter((p) => /^Seats?\s+\d/.test(p));
-        const topic = positions.split(/:\s/)[0];
+        const head = positions.split(/:\s/)[0];
+        const topic = /^Seats?\s+\d/.test(head) ? "a point of the plan" : clip(head, 120);
         const ev = [evidence(reader, "adapter", rel, `#/conflicts/${i}`), evidence(reader, "adapter", `runs/${runName}/run.json`)];
         out.push(finish(makeRecord(runId, {
           run, stage: "plan_review",
@@ -400,7 +437,7 @@ function octopusRecords(reader, status, runId) {
           decided_by: { kind: "council", role: "review-debater", configured_model: debate.provider || undefined },
           question: clip(`Keep or drop the contested finding: ${d.finding?.title || d.debate_id}`, 500),
           state: d.decision ? "decided" : "unknown",
-          chosen: d.decision ? { summary: d.decision === "include" ? "Keep the finding." : d.decision === "exclude" ? "Drop the finding." : clip(d.decision, 500), classification: "observed", executed: "unknown", validated: "unknown" } : null,
+          chosen: d.decision ? { summary: debateSummary(d.decision), classification: "observed", executed: "unknown", validated: "unknown" } : null,
           alternatives: UNKNOWN_ALTERNATIVES,
           rationale: d.reason ? { text: clip(d.reason, 1000), classification: "agent-stated" } : null,
           relevance: { impact: severity === "nit" ? "low" : severity ? "medium" : "unknown", reversibility: "unknown", cost: "unknown", uncertainty: d.finding?.verdict === "needs-debate" ? "high" : "unknown" },
@@ -409,12 +446,18 @@ function octopusRecords(reader, status, runId) {
       });
     });
 
-    // Correction rounds, linked through the implementer seats that wrote them.
+    // Correction rounds: a correction report carries no run id, so it is linked through
+    // the implementer seat that wrote it or, failing that, by falling inside this
+    // ledger's window (first review round to last recorded seat).
     const implementerStamps = new Set(seats.filter((s) => s.execution?.phase === "tangle" && s.execution?.role === "implementer")
       .map((s) => /sync-result-(\d+)-/.exec(String(s.artifacts?.output || ""))?.[1]).filter(Boolean));
+    const seatTimes = seats.map((s) => toEpoch(s.timestamp)).filter(Number.isFinite);
+    const windowStart = markers.length ? Number(markers[0].split("-")[0]) : Infinity;
+    const windowEnd = seatTimes.length ? Math.max(...seatTimes) : -Infinity;
     for (const name of [...results].filter((n) => /^tangle-review-corrections-\d+-\d+\.md$/.test(n)).sort()) {
       const [, n, stamp] = /^tangle-review-corrections-(\d+)-(\d+)\.md$/.exec(name);
-      if (!implementerStamps.has(stamp)) continue;
+      const inWindow = Number(stamp) >= windowStart && Number(stamp) <= windowEnd;
+      if (!implementerStamps.has(stamp) && !inWindow) continue;
       const rel = `results/${name}`;
       const body = reader.read("adapter", rel);
       const stalled = /Status:\s*STALLED/i.test(body.text);

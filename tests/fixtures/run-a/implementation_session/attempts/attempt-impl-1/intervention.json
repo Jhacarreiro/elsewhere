@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "approval-auth",
+  "kind": "human_decision",
+  "question": "Which mechanism should prove that a publish approval comes from the operator?",
+  "context": "The interim check relies on values the agent supplies itself.",
+  "options": [
+    {
+      "id": "one_time_token",
+      "summary": "One-time token sent out of band",
+      "advantages": "The agent cannot precompute it",
+      "limitations": "Needs an issuer and a channel"
+    },
+    {
+      "id": "operator_only",
+      "summary": "Only the operator approves, outside the agent",
+      "advantages": "Strongest separation",
+      "limitations": "Less convenient"
+    }
+  ],
+  "recommendedOption": null,
+  "createdAt": "2026-01-15T10:40:00Z"
+}

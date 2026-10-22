@@ -1,0 +1,24 @@
+{
+  "findings": [
+    {
+      "file": "src/a.ts",
+      "line": 3,
+      "severity": "normal",
+      "title": "Approval not bound to content"
+    },
+    {
+      "file": "src/b.ts",
+      "line": 9,
+      "severity": "nit",
+      "title": "Naming"
+    }
+  ],
+  "excluded": [
+    {
+      "file": "src/c.ts",
+      "line": 1,
+      "severity": "nit",
+      "title": "False alarm"
+    }
+  ]
+}
