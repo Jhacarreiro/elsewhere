@@ -177,6 +177,16 @@ test("a run directory swapped for another one during extraction keeps being read
   });
 });
 
+test("records are ordered by the instant they name, not by how the time is written", () => {
+  withRunCopy((run) => {
+    writeFileSync(join(run, "implementation_intervention.json"), JSON.stringify({ id: "early", question: "Asked before anything else?", createdAt: "2026-01-15T09:30:00+05:00" }));
+    const timed = extract({ runDir: run }).filter((r) => r.time.value);
+    assert.equal(timed[0].question, "Asked before anything else?");
+    const times = timed.map((r) => Date.parse(r.time.value));
+    assert.deepEqual(times, [...times].sort((a, b) => a - b));
+  });
+});
+
 test("every evidence pointer names a real file whose content hash matches", () => {
   for (const record of records()) {
     assert.ok(record.evidence.length > 0, record.id);

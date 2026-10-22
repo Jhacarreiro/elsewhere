@@ -626,6 +626,12 @@ export function generatedAt(text) {
   return Number.isNaN(t) ? null : new Date(t).toISOString();
 }
 
+// Records are ordered by the instant they name, whatever offset it is written in; unknown times last.
+const instant = (r) => {
+  const t = Date.parse(r.time?.value ?? "");
+  return Number.isNaN(t) ? Infinity : t;
+};
+
 export function extract({ runDir, adapterDir = null, maxBytes }) {
   const reader = createReader({ runDir, adapterDir, maxBytes });
   let records;
@@ -640,7 +646,7 @@ export function extract({ runDir, adapterDir = null, maxBytes }) {
   // Records whose evidence could not be read are not emitted: every claim needs a source.
   return records
     .filter((r) => r.evidence.length > 0)
-    .sort((a, b) => String(a.time.value || "9999").localeCompare(String(b.time.value || "9999")));
+    .sort((a, b) => instant(a) - instant(b));
 }
 
 function parseArgs(argv) {
