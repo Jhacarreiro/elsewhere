@@ -56,6 +56,7 @@ The adapter home holds artifacts from many runs. A ledger counts as this run's w
 
 ## Known limits
 
+- The reader checks each root's identity before every read, but another process that swaps a root for a different directory in the instant between that check and the file open can still get a file read. Closing that window needs descriptor-relative reads; it is not done because the extractor runs once, offline, on the operator's own disk.
 - `final_validation_response.md` is overwritten on every automatic council round, so only the last go/revise/stop is visible.
 - Correction reports linked by time window can still be wrong when two runs overlap in time on the same adapter home.
 - Relevance (impact, cost, reversibility) is set by simple rules per record type; it is a starting point, not a measurement.
