@@ -28,7 +28,7 @@ The records are the extractor's output with only these replacements, made before
 - absolute paths on that machine became `<private-path>` (two places in agent-written text);
 - IP addresses, email addresses, token-like strings and `Bearer` values would have become `<ip>`, `<email>` and `<secret>`; none were present.
 
-Nothing else was edited. Agent-written text (findings, rationales, intervention questions) is kept as written, including links to the task repository. Evidence pointers and sha256 hashes refer to the run's private artifacts: they show which file each record came from, but they cannot be checked from this repository.
+Every record was then read in full for other private details (hostnames, user names, internal ports, configuration values); none were found. The environment variable names and test values that appear are the task's own. Nothing else was edited. Agent-written text (findings, rationales, intervention questions) is kept as written, including links to the task repository. Evidence pointers and sha256 hashes refer to the run's private artifacts: they show which file each record came from, but they cannot be checked from this repository.
 
 ## Regenerating the map
 
