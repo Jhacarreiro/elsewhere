@@ -1,6 +1,6 @@
 # Decision record v0
 
-**Status:** proposal for Phase 1 step 2 of the [roadmap](ROADMAP.md). Nothing emits or reads it yet. The schema is [`schemas/decision-record.v0.schema.json`](../schemas/decision-record.v0.schema.json).
+**Status:** proposal for Phase 1 step 2 of the [roadmap](ROADMAP.md). The read-only [decision map](DECISION_MAP.md) prototype extracts these records from finished runs (`mode: extracted`) and renders them; no runner or adapter emits them yet. The schema is [`schemas/decision-record.v0.schema.json`](../schemas/decision-record.v0.schema.json).
 
 A decision record describes one consequential decision in a development run and where the evidence for it lives. It is **additive**: it never replaces or edits the run's own artifacts, and a run without records works exactly as before. It is **adapter-neutral**: Octopus can be the first producer, but nothing in the record depends on Octopus.
 
