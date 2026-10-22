@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { extract } from "../decision-map/extract.mjs";
@@ -71,6 +71,44 @@ test("an answer to another request leaves this one pending", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+function withRunCopy(fn) {
+  const dir = mkdtempSync(join(tmpdir(), "decision-map-"));
+  try {
+    cpSync(runDir, join(dir, "run"), { recursive: true });
+    return fn(join(dir, "run"), dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("a final decision followed by punctuation is still read", () => {
+  withRunCopy((run) => {
+    writeFileSync(join(run, "final_validation_response.md"), "REVISE: tighten the approval check.\n");
+    const [final] = extract({ runDir: run }).filter((r) => r.question.startsWith("Ship, revise or stop"));
+    assert.equal(final.chosen.summary, "revise");
+  });
+});
+
+test("the quality gate is dated by its Generated header, not by when the file was copied", () => {
+  const [gate] = records().filter((r) => r.decided_by.role === "quality-gate");
+  assert.deepEqual(gate.time, { value: "2026-01-15T10:45:00.000Z", source: "artifact_header" });
+});
+
+test("symlinked or oversized artifacts are not read", () => {
+  withRunCopy((run, dir) => {
+    writeFileSync(join(dir, "outside.md"), "go private text outside the run");
+    unlinkSync(join(run, "final_validation_response.md"));
+    symlinkSync(join(dir, "outside.md"), join(run, "final_validation_response.md"));
+    const linked = extract({ runDir: run });
+    assert.equal(linked.filter((r) => r.question.startsWith("Ship, revise or stop")).length, 0);
+    assert.ok(!JSON.stringify(linked).includes("private text"));
+    writeFileSync(join(run, "repository_delivery.json"), JSON.stringify({ completedAt: "2026-01-15T12:00:00Z", padding: "x".repeat(8192) }));
+    const bounded = extract({ runDir: run, maxBytes: 4096 });
+    assert.equal(bounded.filter((r) => r.stage === "delivery").length, 0, "a file over the limit is skipped");
+    assert.ok(bounded.length > 0, "files under the limit are still read");
+  });
 });
 
 test("every evidence pointer names a real file whose content hash matches", () => {

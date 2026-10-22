@@ -3,8 +3,8 @@
 // adapter's results) -> decision records v0, one JSON object per line.
 // It never writes into the run or adapter directories.
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
-import { join, basename } from "node:path";
+import { closeSync, constants, existsSync, fstatSync, openSync, readSync, readdirSync, realpathSync } from "node:fs";
+import { join, basename, sep } from "node:path";
 
 export const PRODUCER = { name: "elsewhere-decision-extractor", version: "0.1.0", mode: "extracted" };
 
@@ -15,8 +15,34 @@ const clip = (text, max) => {
 };
 const epochIso = (seconds) => new Date(Number(seconds) * 1000).toISOString();
 
-// One reader per extraction: caches file contents and hashes, maps container paths.
-export function createReader({ runDir, adapterDir = null }) {
+export const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
+
+// Reads one regular file that really lives under base: no symlinks (at the file or in a parent
+// directory), nothing larger than maxBytes. Anything else counts as unreadable.
+function readContained(base, rel, maxBytes) {
+  const abs = join(base, rel);
+  const realBase = realpathSync(base);
+  const real = realpathSync(abs);
+  if (real !== join(realBase, rel) || !real.startsWith(realBase + sep)) return null;
+  const fd = openSync(real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.size > maxBytes) return null;
+    const buf = Buffer.alloc(st.size);
+    let off = 0;
+    while (off < st.size) {
+      const n = readSync(fd, buf, off, st.size - off, off);
+      if (n === 0) break;
+      off += n;
+    }
+    return { buf: buf.subarray(0, off), mtime: st.mtime.toISOString() };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// One reader per extraction: caches file contents and hashes.
+export function createReader({ runDir, adapterDir = null, maxBytes = MAX_ARTIFACT_BYTES }) {
   const cache = new Map();
   const roots = { run: runDir, adapter: adapterDir };
   const read = (root, rel) => {
@@ -25,8 +51,8 @@ export function createReader({ runDir, adapterDir = null }) {
     const abs = join(base, rel);
     if (!cache.has(abs)) {
       try {
-        const buf = readFileSync(abs);
-        cache.set(abs, { text: buf.toString("utf8"), sha: sha256(buf), mtime: statSync(abs).mtime.toISOString() });
+        const f = readContained(base, rel, maxBytes);
+        cache.set(abs, f && { text: f.buf.toString("utf8"), sha: sha256(f.buf), mtime: f.mtime });
       } catch {
         cache.set(abs, null);
       }
@@ -125,9 +151,11 @@ function controlPlaneRecords(reader, status, runId) {
   if (status.canonicalPlanGit?.commit || reader.read("run", "implementation_plan.md")) {
     const ev = [evidence(reader, "run", "status.json", "#/canonicalPlanGit"), evidence(reader, "run", "implementation_plan.md")].filter(Boolean);
     const commit = status.canonicalPlanGit?.commit;
+    // The run records no approval time; the approved plan file's time is the closest evidence.
+    const plan = reader.read("run", "implementation_plan.md");
     out.push(finish(makeRecord(runId, {
       run, stage: "planning",
-      time: status.startedAt ? { value: status.startedAt, source: "artifact_field" } : { value: null, source: "unknown" },
+      time: plan ? { value: plan.mtime, source: "file_mtime" } : { value: null, source: "unknown" },
       decided_by: { kind: "human" },
       question: "Approve the implementation plan for this run.",
       state: "decided",
@@ -307,10 +335,11 @@ function controlPlaneRecords(reader, status, runId) {
   // Final decision (go / revise / stop). Automatic council rounds overwrite this file.
   const final = reader.read("run", "final_validation_response.md");
   if (final) {
-    const first = final.text.trimStart().split(/\s/)[0]?.toLowerCase();
-    if (["go", "revise", "stop"].includes(first)) {
+    // Same boundary as the cycle's own parser: "REVISE: ..." and "go." are decisions too.
+    const first = /^(go|revise|stop)\b/i.exec(final.text.trimStart())?.[1]?.toLowerCase();
+    if (first) {
       const ev = [evidence(reader, "run", "final_validation_response.md", "#L1")];
-      const council = /^revise\s+Council code review/i.test(final.text.trimStart());
+      const council = /^revise\W+Council code review/i.test(final.text.trimStart());
       out.push(finish(makeRecord(runId, {
         run, stage: "final_validation",
         time: { value: final.mtime, source: "file_mtime" },
@@ -499,7 +528,7 @@ function octopusRecords(reader, status, runId) {
     const ev = [evidence(reader, "adapter", rel, "#Decision-Branch")];
     out.push(finish(makeRecord(runId, {
       run: { ...run, attempt_id: attempt }, stage: "review",
-      time: { value: reader.read("adapter", rel).mtime, source: "file_mtime" },
+      time: generatedAt(body) ? { value: generatedAt(body), source: "artifact_header" } : { value: reader.read("adapter", rel).mtime, source: "file_mtime" },
       decided_by: { kind: "adapter_rule", role: "quality-gate" },
       question: "Proceed, retry or stop after the adapter's quality gate?",
       state: "decided",
@@ -512,8 +541,27 @@ function octopusRecords(reader, status, runId) {
   return out;
 }
 
-export function extract({ runDir, adapterDir = null }) {
-  const reader = createReader({ runDir, adapterDir });
+// "Generated:" header written by the adapter, either ISO 8601 or date(1)'s default format
+// ("Mon Jun  8 08:00:10 WEST 2026"). Unknown zone names give null rather than a guess.
+const ZONES = { UTC: "+00:00", GMT: "+00:00", WET: "+00:00", WEST: "+01:00", CET: "+01:00", CEST: "+02:00" };
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+export function generatedAt(text) {
+  const raw = /^[#\s]*Generated:\s*(.+?)\s*$/m.exec(text)?.[1];
+  if (!raw) return null;
+  const d = /^\w{3}\s+(\w{3})\s+(\d{1,2})\s+(\d{2}:\d{2}:\d{2})\s+([A-Z]+)\s+(\d{4})$/.exec(raw);
+  let iso = null;
+  if (d) {
+    const month = MONTHS.indexOf(d[1]) + 1;
+    if (month && ZONES[d[4]]) iso = `${d[5]}-${String(month).padStart(2, "0")}-${d[2].padStart(2, "0")}T${d[3]}${ZONES[d[4]]}`;
+  } else if (/^\d{4}-\d{2}-\d{2}T/.test(raw)) {
+    iso = raw;
+  }
+  const t = iso ? Date.parse(iso) : NaN;
+  return Number.isNaN(t) ? null : new Date(t).toISOString();
+}
+
+export function extract({ runDir, adapterDir = null, maxBytes }) {
+  const reader = createReader({ runDir, adapterDir, maxBytes });
   const status = reader.json("run", "status.json");
   if (!status) throw new Error(`No readable status.json in ${runDir}`);
   const runId = String(status.runId || basename(runDir));
