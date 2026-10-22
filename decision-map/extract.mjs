@@ -13,7 +13,13 @@ const clip = (text, max) => {
   const s = String(text ?? "").replace(/\s+/g, " ").trim();
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 };
-const epochIso = (seconds) => new Date(Number(seconds) * 1000).toISOString();
+// Time from an epoch-seconds stamp in an adapter file name; an impossible stamp is unknown, not fatal.
+const epochTime = (seconds) => {
+  const t = Number(seconds) * 1000;
+  return Number.isFinite(t) && Math.abs(t) <= 8.64e15
+    ? { value: new Date(t).toISOString(), source: "artifact_header" }
+    : { value: null, source: "unknown" };
+};
 
 export const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 
@@ -46,6 +52,10 @@ function readContained(base, rel, maxBytes) {
 
 // One reader per extraction: caches file contents and hashes.
 export function createReader({ runDir, adapterDir = null, maxBytes = MAX_ARTIFACT_BYTES }) {
+  // The roots themselves must be real directories too, or a symlink could swap in another tree.
+  for (const [flag, dir] of [["--run", runDir], ["--adapter", adapterDir]]) {
+    if (dir && lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Error(`${flag} must not be a symlink: ${dir}`);
+  }
   const cache = new Map();
   const roots = { run: runDir, adapter: adapterDir };
   const read = (root, rel) => {
@@ -459,7 +469,7 @@ function octopusRecords(reader, status, runId) {
         const ev = [evidence(reader, "adapter", findingsRel)];
         out.push(finish(makeRecord(runId, {
           run: { ...run, round }, stage: "review",
-          time: { value: epochIso(stamp), source: "artifact_header" },
+          time: epochTime(stamp),
           decided_by: { kind: "council", role: "review-synthesis" },
           question: `Which findings stand after review round ${round}?`,
           state: "decided",
@@ -477,7 +487,7 @@ function octopusRecords(reader, status, runId) {
         const severity = d.finding?.severity;
         out.push(finish(makeRecord(runId, {
           run: { ...run, round }, stage: "review",
-          time: { value: epochIso(stamp), source: "artifact_header" },
+          time: epochTime(stamp),
           decided_by: { kind: "council", role: "review-debater", configured_model: debate.provider || undefined },
           question: clip(`Keep or drop the contested finding: ${d.finding?.title || d.debate_id}`, 500),
           state: d.decision ? "decided" : "unknown",
@@ -509,7 +519,7 @@ function octopusRecords(reader, status, runId) {
       const ev = [evidence(reader, "adapter", rel)];
       out.push(finish(makeRecord(runId, {
         run: { ...run, round: Number(n) }, stage: "correction",
-        time: { value: epochIso(stamp), source: "artifact_header" },
+        time: epochTime(stamp),
         decided_by: { kind: "agent", role: "implementer" },
         question: `How should correction round ${n} fix the standing findings?`,
         state: stalled ? "not_completed" : "decided",

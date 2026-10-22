@@ -35,7 +35,8 @@ function alternatives(record) {
 
 function decision(record) {
   const c = record.chosen;
-  const when = record.time?.value ? `${record.time.value.replace("T", " ").slice(0, 16)}Z` : "time unknown";
+  const instant = record.time?.value ? new Date(record.time.value) : null;
+  const when = instant && !Number.isNaN(instant.getTime()) ? `${instant.toISOString().replace("T", " ").slice(0, 16)}Z` : "time unknown";
   const who = [record.decided_by?.kind, record.decided_by?.role].filter(Boolean).join(" · ");
   const altCount = record.alternatives?.status === "listed" ? record.alternatives.items.length : null;
   const summary = `<summary>

@@ -128,6 +128,30 @@ test("special files and rejected adapter results are skipped, not fatal", () => 
   });
 });
 
+test("a symlinked run directory is refused and an impossible adapter stamp is unknown, not fatal", () => {
+  withRunCopy((run, dir) => {
+    symlinkSync(run, join(dir, "linked"));
+    assert.throws(() => extract({ runDir: join(dir, "linked") }), /must not be a symlink/);
+    const adapter = join(dir, "octopus");
+    cpSync(adapterDir, adapter, { recursive: true });
+    const ledgerPath = join(adapter, "runs", "run-x", "run.json");
+    const ledger = JSON.parse(readFileSync(ledgerPath, "utf8"));
+    const marker = `${"9".repeat(40)}-octopus-tangle-review-marker.zz`;
+    ledger.seats.push({ ...ledger.seats[1], seat_id: `review-${marker}` });
+    writeFileSync(ledgerPath, JSON.stringify(ledger));
+    writeFileSync(join(adapter, "results", `review-findings-${marker}.json`), JSON.stringify({ findings: [], excluded: [] }));
+    const rounds = extract({ runDir: run, adapterDir: adapter }).filter((r) => r.question.startsWith("Which findings stand"));
+    assert.equal(rounds.length, 2);
+    assert.deepEqual(rounds.at(-1).time, { value: null, source: "unknown" });
+  });
+});
+
+test("the map shows each time in UTC whatever offset the artifact used", () => {
+  const [first] = records();
+  const html = renderMap([{ ...first, time: { value: "2026-01-15T10:00:00+01:00", source: "artifact_field" } }]);
+  assert.match(html, /2026-01-15 09:00Z/);
+});
+
 test("every evidence pointer names a real file whose content hash matches", () => {
   for (const record of records()) {
     assert.ok(record.evidence.length > 0, record.id);
