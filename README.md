@@ -49,6 +49,7 @@ The [v0.2 product contract](briefs/web-v0.2.md) extends that prototype vision to
 
 - [Decision Multiverse roadmap](docs/ROADMAP.md) — staged milestones and acceptance criteria
 - [Decision provenance inventory](docs/DECISION_PROVENANCE.md) and [decision record v0](docs/DECISION_RECORD.md) — Phase 1 steps 1 and 2
+- [Decision map](docs/DECISION_MAP.md) — read-only extractor, relevance filter and static HTML map (Phase 1 steps 3 to 5)
 - [The Roads Not Taken — working thesis](docs/THESIS_DRAFT.md) — central argument, hypotheses and falsification risks
 - [Conversation synthesis](docs/CONVERSATION_NOTES.md) — key choices, conclusions and unresolved questions
 

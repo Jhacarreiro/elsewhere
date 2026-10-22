@@ -1,0 +1,25 @@
+{
+  "status": "partial",
+  "quorum": {
+    "met": false,
+    "required_non_chair": 2,
+    "received_non_chair": 3
+  },
+  "seats": [
+    {
+      "persona": "security-auditor",
+      "verdict": "REVISE",
+      "status": "responded"
+    },
+    {
+      "persona": "code-reviewer",
+      "verdict": "REVISE",
+      "status": "responded"
+    },
+    {
+      "persona": "test-automator",
+      "verdict": "REVISE",
+      "status": "responded"
+    }
+  ]
+}
