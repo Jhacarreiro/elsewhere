@@ -1,14 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { closeSync, cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, cpSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createReader, extract } from "../decision-map/extract.mjs";
 import { filterDecisions } from "../decision-map/filter.mjs";
 import { renderMap } from "../decision-map/render.mjs";
-import { openOutputDir, writeAtomic } from "../decision-map/map-run.mjs";
+import { writeNew } from "../decision-map/map-run.mjs";
 import { pinRoot } from "../decision-map/extract.mjs";
 
 const fixtures = new URL("./fixtures/", import.meta.url).pathname;
@@ -283,6 +283,7 @@ test("map-run writes the run's records and map into the run, and rerunning repla
     const second = readFileSync(join(run, "decision-map", "decisions.jsonl"), "utf8").trim().split("\n");
     assert.equal(second.length, extract({ runDir: run }).length);
     assert.deepEqual(readdirSync(join(run, "decision-map")).sort(), ["decisions.jsonl", "map.html"]);
+    assert.deepEqual(readdirSync(run).filter((n) => n.startsWith(".decision-map")), [], "no staging or old folders are left");
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -311,28 +312,56 @@ test("map-run refuses an output folder that is a link and writes nothing through
   }
 });
 
-test("map-run keeps writing into the folder it opened when the path is swapped for a link", () => {
-  const work = mkdtempSync(join(tmpdir(), "dm-maprun-swap-"));
+const mapRunCli = new URL("../decision-map/map-run.mjs", import.meta.url).pathname;
+const runCli = (args) => {
   try {
-    const run = join(work, "run-a");
-    const outside = join(work, "outside");
+    return { code: 0, out: JSON.parse(execFileSync(process.execPath, [mapRunCli, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })) };
+  } catch (err) {
+    return { code: err.status, out: JSON.parse(err.stdout) };
+  }
+};
+
+test("map-run never overwrites a file that already exists where it writes", () => {
+  const work = mkdtempSync(join(tmpdir(), "dm-maprun-excl-"));
+  const dirFd = openSync(work, "r");
+  try {
+    writeFileSync(join(work, "map.html"), "someone else's file");
+    assert.throws(() => writeNew(dirFd, "map.html", "map"), { code: "EEXIST" });
+    assert.equal(readFileSync(join(work, "map.html"), "utf8"), "someone else's file");
+  } finally {
+    closeSync(dirFd);
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("extraction reads the run it was pinned to even if the path is swapped for another run", () => {
+  const work = mkdtempSync(join(tmpdir(), "dm-maprun-runswap-"));
+  try {
+    const run = join(work, "run");
     cpSync(runDir, run, { recursive: true });
-    cpSync(runDir, outside, { recursive: true });
+    const expected = extract({ runDir: run }).map((r) => r.id);
     const root = pinRoot("run directory", run);
-    const outFd = openOutputDir(root);
     try {
-      renameSync(join(run, "decision-map"), join(run, "moved"));
-      symlinkSync(outside, join(run, "decision-map"));
-      const before = snapshot(outside);
-      writeAtomic(outFd, "map.html", "pinned");
-      assert.deepEqual(snapshot(outside), before);
-      assert.equal(readFileSync(join(run, "moved", "map.html"), "utf8"), "pinned");
-      assert.equal(existsSync(join(outside, "map.html")), false);
+      renameSync(run, join(work, "original"));
+      cpSync(runDir, run, { recursive: true });
+      const status = JSON.parse(readFileSync(join(run, "status.json"), "utf8"));
+      writeFileSync(join(run, "status.json"), JSON.stringify({ ...status, runId: "another-run" }));
+      const fromPinned = extract({ runDir: run, runRoot: root });
+      assert.deepEqual(fromPinned.map((r) => r.id), expected);
+      assert.ok(fromPinned.every((r) => r.run.run_id !== "another-run"));
     } finally {
-      closeSync(outFd);
       closeSync(root.fd);
     }
   } finally {
     rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("map-run answers a bad invocation with one JSON error line", () => {
+  for (const args of [[], ["--nope", "x"], ["--adapter"]]) {
+    const { code, out } = runCli(args);
+    assert.notEqual(code, 0, args.join(" "));
+    assert.equal(out.ok, false);
+    assert.match(out.error, /Usage/);
   }
 });

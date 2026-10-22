@@ -1,14 +1,15 @@
 # Decision map (Phase 1 steps 3 to 6)
 
-**Status:** working prototype. It reads finished runs and draws their decisions; it does not change any run, runner or runtime.
+**Status:** working prototype. It reads finished runs and draws their decisions. Extraction never changes a run; `map-run.mjs` only adds its own `decision-map/` folder to the run it maps. Nothing changes a runner or runtime.
 
-Three small, dependency-free Node modules in [`decision-map/`](../decision-map):
+Four small, dependency-free Node modules in [`decision-map/`](../decision-map):
 
 | Module | Step | What it does |
 | --- | --- | --- |
 | `extract.mjs` | 3 | Reads a Development Cycle run directory (and optionally the Octopus adapter home) and writes [decision record v0](DECISION_RECORD.md) lines. Read-only. |
 | `render.mjs` | 4 | Turns decision records into one self-contained HTML page: one line per decision, details on expansion. |
 | `filter.mjs` | 5 | Selects which records the map shows, by impact, uncertainty, cost and reversibility. Records are never changed or dropped from the source. |
+| `map-run.mjs` | - | Extracts and renders one run and keeps the result in that run's `decision-map/` folder, for use at the end of every run. |
 
 ## Usage
 
@@ -23,7 +24,9 @@ Other filter flags: `--min-uncertainty`, `--min-cost` (`low|medium|high`) and `-
 
 ## Map at the end of every run
 
-`map-run.mjs` does both steps for one run and writes `decisions.jsonl` and `map.html` into a `decision-map/` folder inside the run directory, replacing any earlier map. It prints one JSON line (`ok`, `records`, `pending`), so it can be configured as the Development Cycle's run-end command, which appends the run directory as the last argument. It refuses a `decision-map` entry that is not a plain directory. Nothing is published: the map stays with the run's private state.
+`map-run.mjs` does both steps for one run and writes `decisions.jsonl` and `map.html` into a `decision-map/` folder inside the run directory, replacing any earlier map. It prints one JSON line (`ok`, `records`, `pending`, or `ok: false` with an `error`, also for a bad invocation), so it can be configured as the Development Cycle's run-end command, which appends the run directory as the last argument. Nothing is published: the map stays with the run's private state.
+
+It reads the records from the same open run directory it writes into. The new files are created (never overwritten) in a fresh, randomly named folder inside the run, which is then renamed to `decision-map/`; the previous map folder is moved aside and only its two map files are removed. Every rename names entries of the open run directory, so swapping paths while it runs cannot make it replace anything outside the run. It refuses a `decision-map` entry that is not a plain directory.
 
 ## What is extracted
 
