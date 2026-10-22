@@ -12,7 +12,7 @@ const files = execFileSync("git", ["ls-files", "-z"], { cwd: root })
 
 const textExtensions = new Set([
   "", ".cjs", ".css", ".d.ts", ".env", ".html", ".js", ".json", ".md",
-  ".mjs", ".py", ".sh", ".toml", ".ts", ".txt", ".yaml", ".yml",
+  ".jsonl", ".mjs", ".py", ".sh", ".toml", ".ts", ".txt", ".yaml", ".yml",
 ]);
 
 const checks = [
