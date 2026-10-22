@@ -11,7 +11,7 @@ Run `social-publisher-20261020135547455-8kv859` worked on the Social Publisher b
 
 ## What the map shows
 
-Read in order, the map shows what was earlier found only by reading the run's artifacts by hand:
+The map groups records by stage (follow-up, planning, implementation, review and so on), in time order within each stage, so it is not one timeline. Taken in time order, the records show what was earlier found only by reading the run's artifacts by hand:
 
 1. The first implementation went through three correction rounds between four reviews; the quality gate then let it proceed as "challenged", and it was delivered for final validation.
 2. One question raised by the implementing agent, which stronger authentication should guard the operator's approval, stayed `pending`. No option was recommended, so the map shows it with high uncertainty.
@@ -26,9 +26,10 @@ What the map alone does not show: the commit in the delivery record is the pre-c
 The records are the extractor's output with only these replacements, made before the file left the machine that ran the round:
 
 - absolute paths on that machine became `<private-path>` (two places in agent-written text);
-- IP addresses, email addresses, token-like strings and `Bearer` values would have become `<ip>`, `<email>` and `<secret>`; none were present.
+- IP addresses, email addresses, token-like strings and `Bearer` values would have become `<ip>`, `<email>` and `<secret>`; none were present;
+- the one link into the task repository, which is private, became `<task-repository>/issues/10`.
 
-Every record was then read in full for other private details (hostnames, user names, internal ports, configuration values); none were found. The environment variable names and test values that appear are the task's own. Nothing else was edited. Agent-written text (findings, rationales, intervention questions) is kept as written, including links to the task repository. Evidence pointers and sha256 hashes refer to the run's private artifacts: they show which file each record came from, but they cannot be checked from this repository.
+Every record was then read in full for other private details (hostnames, user names, internal ports, configuration values); none were found. The environment variable names and test values that appear are the task's own. Nothing else was edited. Agent-written text (findings, rationales, intervention questions) is kept as written, apart from that link. Evidence pointers and sha256 hashes refer to the run's private artifacts: they show which file each record came from, but they cannot be checked from this repository.
 
 ## Regenerating the map
 
