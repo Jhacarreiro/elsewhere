@@ -196,7 +196,12 @@ function controlPlaneRecords(reader, status, runId) {
     requests.push({ rel: "implementation_intervention.json", value: durable, attempt: durable.sourceAttemptId || undefined });
   }
   for (const { rel, value, attempt } of requests) {
-    const answered = response && (!response.id || !value.id || response.id === value.id || response.id === durable?.id);
+    // An answer belongs to one request: matched by id, or, when ids are missing, to the durable
+    // request it was written for (or the only request there is).
+    const isDurable = rel === "implementation_intervention.json" || (durable?.question === value.question && (durable.id || "") === (value.id || ""));
+    const answered = Boolean(response) && (response.id && value.id
+      ? response.id === value.id
+      : (durable ? isDurable : requests.length === 1));
     const items = (Array.isArray(value.options) ? value.options : []).map((o) => {
       if (o && typeof o === "object") {
         const item = { summary: clip(o.summary || o.id || JSON.stringify(o), 500), classification: "agent-stated", executed: "no" };

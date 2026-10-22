@@ -58,6 +58,21 @@ test("a recorded answer turns the intervention into an observed decision", () =>
   }
 });
 
+test("an answer to another request leaves this one pending", () => {
+  const dir = mkdtempSync(join(tmpdir(), "decision-map-"));
+  try {
+    cpSync(runDir, dir, { recursive: true });
+    writeFileSync(join(dir, "implementation_intervention.json"), JSON.stringify({ id: "different-request", question: "Which publish window?", options: ["now", "later"] }));
+    writeFileSync(join(dir, "implementation_intervention_response.json"), JSON.stringify({ id: "different-request", response: "later" }));
+    const humans = extract({ runDir: dir }).filter((r) => r.decided_by.kind === "human" && r.stage === "implementation");
+    const decided = humans.filter((r) => r.state === "decided");
+    assert.equal(humans.length, 2);
+    assert.deepEqual(decided.map((r) => [r.question, r.chosen.summary]), [["Which publish window?", "later"]]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("every evidence pointer names a real file whose content hash matches", () => {
   for (const record of records()) {
     assert.ok(record.evidence.length > 0, record.id);
