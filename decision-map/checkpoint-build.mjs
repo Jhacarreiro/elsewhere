@@ -159,14 +159,15 @@ export function writeBundle(out, { record, copies }, roots) {
   for (const root of roots.filter(Boolean)) {
     if (within(target, realpathSync(root))) throw new Error("--out must not be inside a run, adapter or repository root");
   }
-  mkdirSync(target);
-  writeFileSync(join(target, "checkpoint.json"), `${JSON.stringify(record, null, 2)}\n`, { flag: "wx" });
+  // The bundle holds private run artifacts: owner-only, whatever the umask.
+  mkdirSync(target, { mode: 0o700 });
+  writeFileSync(join(target, "checkpoint.json"), `${JSON.stringify(record, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   if (record.adequacy.status !== "adequate") return;
   for (const c of copies) {
     const dest = join(target, "inputs", c.root, c.pointer);
     if (!within(dest, join(target, "inputs"))) throw new Error(`input pointer escapes the bundle: ${c.pointer}`);
-    mkdirSync(dirname(dest), { recursive: true });
-    writeFileSync(dest, c.bytes, { flag: "wx" });
+    mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
+    writeFileSync(dest, c.bytes, { flag: "wx", mode: 0o600 });
   }
 }
 

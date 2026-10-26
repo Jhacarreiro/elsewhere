@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createReader } from "../decision-map/extract.mjs";
@@ -130,4 +130,18 @@ test("the bundle is never written inside a run, adapter or repository root", asy
     assert.throws(() => writeBundle(inside, built, [f.run, f.adapter, f.repo]), /must not be inside/);
     assert.equal(existsSync(inside), false);
   }
+});
+
+test("the bundle is readable only by its owner, even under a permissive umask", async () => {
+  const f = await fixture();
+  const built = build(f, spec(f));
+  const out = join(f.top, "bundle");
+  const previous = process.umask(0o000);
+  try {
+    writeBundle(out, built, [f.run, f.adapter, f.repo]);
+  } finally {
+    process.umask(previous);
+  }
+  for (const dir of [out, join(out, "inputs"), join(out, "inputs", "adapter", "results")]) assert.equal(statSync(dir).mode & 0o777, 0o700, dir);
+  for (const file of [join(out, "checkpoint.json"), join(out, "inputs", "adapter", "results", "review-input.diff")]) assert.equal(statSync(file).mode & 0o777, 0o600, file);
 });
