@@ -300,7 +300,7 @@ test("--canary passes through the full command when the model's HOME is the writ
       assert.equal(status, 0, stderr);
       assert.deepEqual(report, { ok: true, failures: [], exit: 0 });
       const kept = JSON.parse(readFileSync(join(keep, "canary.json"), "utf8"));
-      assert.equal(kept.reply.home, writable);
+      assert.ok(kept.reply.output.includes(`HOME ${writable}\n`));
       assert.ok(kept.command.includes("canary"));
     });
   } finally {
@@ -311,8 +311,10 @@ test("--canary passes through the full command when the model's HOME is the writ
 
 test("a hidden directory may show only the mount points of directories named inside it", () => {
   assert.deepEqual(mountedInside("/s", { readable: ["/s/npm/lib", "/s2/x", "/t"], writable: ["/s/scratch"] }), ["npm", "scratch"]);
-  assert.deepEqual(canaryFailures({ home: "/w", hidden: { "/s": ["npm"] } }, { hide: ["/s"], readable: ["/s/npm"], writable: ["/w"] }), []);
-  assert.deepEqual(canaryFailures({ home: "/w", hidden: { "/s": ["npm", "auth.json"] } }, { hide: ["/s"], readable: ["/s/npm"], writable: ["/w"] }), ["hidden_not_empty /s"]);
+  const args = { hide: ["/s", "/r"], readable: ["/s/npm"], writable: ["/w"] };
+  assert.deepEqual(canaryFailures({ output: "HOME /w\nENTRY /s npm\nABSENT /r\nEND\n" }, args), []);
+  assert.deepEqual(canaryFailures({ output: "HOME /w\nENTRY /s npm\nENTRY /s auth.json\nENTRY /r x\nEND" }, args), ["hidden_not_empty /s", "hidden_not_empty /r"]);
+  assert.deepEqual(canaryFailures({ output: "HOME /w\n" }, args), ["no_output"]);
 });
 
 test("--canary fails when the model sees a hidden directory's files or another HOME, as a CLI ignoring the sandbox would", () => {

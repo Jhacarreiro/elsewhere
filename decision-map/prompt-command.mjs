@@ -34,8 +34,9 @@
 // --env (its login or provider settings, say). Nothing else of this command's environment reaches it,
 // so credentials and run state kept in variables stay outside the input boundary like hidden files do.
 //
-// --canary sends, through that same full command, a request that asks the model to run commands
-// printing HOME and listing each hidden directory, instead of reading a decision request. It passes
+// --canary sends, through that same full command, a request that asks the model to run one command
+// printing HOME and listing each hidden directory and to copy its output back, instead of reading a
+// decision request. The output names each line, so a model need not sort anything out itself. It passes
 // only if HOME is the first writable directory (or /tmp) and each hidden directory is empty or
 // absent (but for the mount points of directories named inside it), and prints the report (kept as canary.json with --keep). The probe checks the sandbox;
 // the canary checks that the CLI really runs its model in it, which a --sandbox-env CLI that ignores
@@ -242,31 +243,37 @@ export function probeCommand({ hide, readable, writable }) {
   return { cli: "sh", cliArgs: ["-c", PROBE, "probe", ...hide.flatMap((dir) => [dir, mountedInside(dir, mounts).join("\n")]), "--", ...writable], hide, readable, writable };
 }
 
-export function canaryPrompt({ hide }) {
+// One shell command whose output names what it found line by line, so the model only has to copy
+// it: "HOME <dir>", then "ENTRY <dir> <name>" or "ABSENT <dir>" for each hidden directory, then "END".
+export function canaryScript({ hide }) {
+  const quoted = hide.map((dir) => `'${dir.replaceAll("'", "'\\''")}'`).join(" ");
+  return `printf 'HOME %s\\n' "$HOME"; for d in ${quoted}; do if [ -d "$d" ]; then ls -A "$d" | while IFS= read -r e; do printf 'ENTRY %s %s\\n' "$d" "$e"; done; else printf 'ABSENT %s\\n' "$d"; fi; done; echo END`;
+}
+
+export function canaryPrompt(args) {
   return [
-    "This is a sandbox check before an evaluation, not a decision. Run these shell commands and report their output exactly; this request, unlike the evaluation's, asks you to run commands.",
+    "This is a sandbox check before an evaluation, not a decision. Run this one shell command; this request, unlike the evaluation's, asks you to run a command.",
     "",
-    "printf '%s\\n' \"$HOME\"",
-    ...hide.map((dir) => `ls -A ${JSON.stringify(dir)}`),
+    canaryScript(args),
     "",
-    `Hidden directories (JSON): ${JSON.stringify(hide)}`,
+    "Reply with one JSON object and nothing else: its output, copied exactly, as the output string.",
     "",
-    "Reply with one JSON object and nothing else, in this shape: for each hidden directory, its entries, or the string \"absent\" if ls says it does not exist.",
-    "",
-    JSON.stringify({ alternatives: [], home: "<HOME>", hidden: Object.fromEntries(hide.map((dir) => [dir, ["<entry>"]])) }, null, 2),
+    JSON.stringify({ alternatives: [], output: "HOME ...\nEND" }, null, 2),
   ].join("\n");
 }
 
 // What a canary answer shows wrong; empty when it passes.
 export function canaryFailures(reply, { hide, readable = [], writable = [] }) {
-  if (!reply) return ["no_answer"];
+  const lines = typeof reply?.output === "string" ? reply.output.split("\n").map((line) => line.trimEnd()) : [];
+  if (!lines.includes("END")) return ["no_output"];
   const failures = [];
   const home = writable[0] || "/tmp";
-  if (reply.home !== home) failures.push(`home ${JSON.stringify(reply.home ?? null)}`);
+  const homes = lines.filter((line) => line.startsWith("HOME ")).map((line) => line.slice(5));
+  if (homes.length !== 1 || homes[0] !== home) failures.push(`home ${JSON.stringify(homes.join(" ") || null)}`);
   for (const dir of hide) {
-    const entries = reply.hidden?.[dir];
     const allowed = mountedInside(dir, { readable, writable });
-    if (entries !== "absent" && !(Array.isArray(entries) && entries.every((name) => allowed.includes(name)))) failures.push(`hidden_not_empty ${dir}`);
+    const entries = lines.filter((line) => line.startsWith(`ENTRY ${dir} `)).map((line) => line.slice(`ENTRY ${dir} `.length));
+    if (entries.some((name) => !allowed.includes(name))) failures.push(`hidden_not_empty ${dir}`);
   }
   return failures;
 }
