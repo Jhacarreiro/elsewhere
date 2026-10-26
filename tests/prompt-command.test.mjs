@@ -271,3 +271,41 @@ test("--sandbox-env runs the CLI outside and hands it the same sandbox as a JSON
     rmSync(hidden, { recursive: true, force: true });
   }
 });
+
+function canary(own, env = {}) {
+  const result = spawnSync(process.execPath, [adapter, ...own, "--canary", "--", process.execPath, model, "canary"], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: fakeBwrap, ...env } });
+  return { status: result.status, report: result.stdout ? JSON.parse(result.stdout) : null, stderr: result.stderr };
+}
+
+test("--canary passes through the full command when the model's HOME is the writable directory and the hidden one is empty", () => {
+  const hidden = mkdtempSync(join(tmpdir(), "prompt-hidden-"));
+  const writable = mkdtempSync(join(tmpdir(), "prompt-writable-"));
+  try {
+    withKeep((keep) => {
+      const { status, report, stderr } = canary(["--keep", keep, "--hide", hidden, "--writable", writable]);
+      assert.equal(status, 0, stderr);
+      assert.deepEqual(report, { ok: true, failures: [], exit: 0 });
+      const kept = JSON.parse(readFileSync(join(keep, "canary.json"), "utf8"));
+      assert.equal(kept.reply.home, writable);
+      assert.ok(kept.command.includes("canary"));
+    });
+  } finally {
+    rmSync(hidden, { recursive: true, force: true });
+    rmSync(writable, { recursive: true, force: true });
+  }
+});
+
+test("--canary fails when the model sees a hidden directory's files or another HOME, as a CLI ignoring the sandbox would", () => {
+  const hidden = mkdtempSync(join(tmpdir(), "prompt-hidden-"));
+  const writable = mkdtempSync(join(tmpdir(), "prompt-writable-"));
+  try {
+    writeFileSync(join(hidden, "outcome.md"), "after the decision\n");
+    // A --sandbox-env CLI that ignores the prefix it is handed: the model runs on the host as is.
+    const { status, report } = canary(["--hide", hidden, "--writable", writable, "--sandbox-env", "IGNORED_PREFIX"], { HOME: "/host-home" });
+    assert.equal(status, 1);
+    assert.deepEqual(report.failures, ['home "/host-home"', `hidden_not_empty ${hidden}`]);
+  } finally {
+    rmSync(hidden, { recursive: true, force: true });
+    rmSync(writable, { recursive: true, force: true });
+  }
+});

@@ -1,6 +1,6 @@
 // Stand-in model CLI for tests: reads a plain-text prompt on stdin and answers in its mode.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 
 const mode = process.argv[2] || "fenced";
 const text = readFileSync(0, "utf8");
@@ -27,6 +27,11 @@ if (mode === "slow") {
 } else if (mode === "peek") {
   // Answers whether the file named next is visible, with no alternatives.
   process.stdout.write(JSON.stringify({ alternatives: [], seen: existsSync(process.argv[3]) }));
+} else if (mode === "canary") {
+  // Does what the canary asks, as a model running the commands would.
+  const hide = JSON.parse(text.split("Hidden directories (JSON): ")[1].split("\n")[0]);
+  const hidden = Object.fromEntries(hide.map((dir) => [dir, existsSync(dir) ? readdirSync(dir) : "absent"]));
+  process.stdout.write(JSON.stringify({ alternatives: [], home: process.env.HOME, hidden }));
 } else if (mode === "prose") {
   process.stdout.write("I would rather not answer in JSON.");
 } else {

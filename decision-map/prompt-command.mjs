@@ -34,6 +34,13 @@
 // --env (its login or provider settings, say). Nothing else of this command's environment reaches it,
 // so credentials and run state kept in variables stay outside the input boundary like hidden files do.
 //
+// --canary sends, through that same full command, a request that asks the model to run commands
+// printing HOME and listing each hidden directory, instead of reading a decision request. It passes
+// only if HOME is the first writable directory (or /tmp) and each hidden directory is empty or
+// absent, and prints the report (kept as canary.json with --keep). The probe checks the sandbox;
+// the canary checks that the CLI really runs its model in it, which a --sandbox-env CLI that ignores
+// the variable would not. It guards against a misconfigured command, not against a model that lies.
+//
 // The model is stopped before generate.mjs's deadline (DECISION_MAP_GENERATOR_TIMEOUT_MS and
 // DECISION_MAP_GENERATOR_DEADLINE, or its default), so this command can keep the failed exchange instead of being killed with the model still
 // running and nothing kept. The model runs in its own process group, and the whole group is stopped,
@@ -74,7 +81,7 @@ export const SYSTEM_DIRS = ["/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64",
 // The most the model may print; past it the model is stopped and the decision withheld.
 export const MAX_ANSWER_BYTES = 8 * 1024 * 1024;
 
-const USAGE = "Usage: node decision-map/prompt-command.mjs [--keep <dir>] [--hide <dir>]... [--readable <dir>]... [--writable <dir>]... [--sandbox-env <NAME>] [--env <NAME>]... [--timeout-seconds <n, capped below generate.mjs's deadline>] -- <cli> [args...]\n       node decision-map/prompt-command.mjs --hide <dir>... [--readable <dir>]... [--writable <dir>]... --probe";
+const USAGE = "Usage: node decision-map/prompt-command.mjs [--keep <dir>] [--hide <dir>]... [--readable <dir>]... [--writable <dir>]... [--sandbox-env <NAME>] [--env <NAME>]... [--canary] [--timeout-seconds <n, capped below generate.mjs's deadline>] -- <cli> [args...]\n       node decision-map/prompt-command.mjs --hide <dir>... [--readable <dir>]... [--writable <dir>]... --probe";
 
 export function prompt(request) {
   const artifacts = request.artifacts.map((a) => [
@@ -163,10 +170,11 @@ function parseArgs(argv, env) {
     else if (own[i] === "--writable" && i + 1 < own.length) args.writable.push(resolve(own[++i]));
     else if (own[i] === "--sandbox-env" && /^[A-Z_][A-Z0-9_]*$/.test(own[i + 1] || "")) args.sandboxEnv = own[++i];
     else if (own[i] === "--env" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(own[i + 1] || "")) args.env.push(own[++i]);
+    else if (own[i] === "--canary") args.canary = true;
     else if (own[i] === "--timeout-seconds" && Number(own[i + 1]) > 0) args.timeoutMs = Math.min(Number(own[++i]) * 1000, limit);
     else throw new Error(`Unknown argument: ${own[i]}. ${USAGE}`);
   }
-  if ((args.readable.length || args.writable.length || args.sandboxEnv) && !args.hide.length) throw new Error(`--readable, --writable and --sandbox-env only apply with --hide. ${USAGE}`);
+  if ((args.readable.length || args.writable.length || args.sandboxEnv || args.canary) && !args.hide.length) throw new Error(`--readable, --writable, --sandbox-env and --canary only apply with --hide. ${USAGE}`);
   return args;
 }
 
@@ -223,6 +231,34 @@ export function sandboxEnvCommand(args, bwrap = "bwrap") {
 
 export function probeCommand({ hide, readable, writable }) {
   return { cli: "sh", cliArgs: ["-c", PROBE, "probe", ...hide, "--", ...writable], hide, readable, writable };
+}
+
+export function canaryPrompt({ hide }) {
+  return [
+    "This is a sandbox check before an evaluation, not a decision. Run these shell commands and report their output exactly; this request, unlike the evaluation's, asks you to run commands.",
+    "",
+    "printf '%s\\n' \"$HOME\"",
+    ...hide.map((dir) => `ls -A ${JSON.stringify(dir)}`),
+    "",
+    `Hidden directories (JSON): ${JSON.stringify(hide)}`,
+    "",
+    "Reply with one JSON object and nothing else, in this shape: for each hidden directory, its entries, or the string \"absent\" if ls says it does not exist.",
+    "",
+    JSON.stringify({ alternatives: [], home: "<HOME>", hidden: Object.fromEntries(hide.map((dir) => [dir, ["<entry>"]])) }, null, 2),
+  ].join("\n");
+}
+
+// What a canary answer shows wrong; empty when it passes.
+export function canaryFailures(reply, { hide, writable = [] }) {
+  if (!reply) return ["no_answer"];
+  const failures = [];
+  const home = writable[0] || "/tmp";
+  if (reply.home !== home) failures.push(`home ${JSON.stringify(reply.home ?? null)}`);
+  for (const dir of hide) {
+    const entries = reply.hidden?.[dir];
+    if (entries !== "absent" && !(Array.isArray(entries) && entries.length === 0)) failures.push(`hidden_not_empty ${dir}`);
+  }
+  return failures;
 }
 
 function killGroup(pid, signal) {
@@ -289,9 +325,19 @@ if (isMain) {
     process.stdout.write(`${JSON.stringify({ sandbox: [sandbox.file, ...sandbox.args.slice(0, sandbox.args.indexOf("--"))], exit: result.status ?? result.signal ?? String(result.error?.code || result.error), found: result.stdout.trim().split("\n").filter(Boolean) }, null, 2)}\n`);
     process.exit(result.status === 0 ? 0 : 1);
   }
-  const request = JSON.parse(readFileSync(0, "utf8"));
   const command = args.sandboxEnv ? sandboxEnvCommand(args, bwrap) : modelCommand(args, bwrap);
   const env = { ...modelEnv(args.env, process.env), ...command.env };
+  const provenance = { command: [args.cli, ...args.cliArgs], sandbox: sandboxPrefix(args, bwrap), env: Object.keys(env).sort() };
+  if (args.canary) {
+    const result = await run({ ...command, env }, canaryPrompt(args), args.timeoutMs, args.graceMs);
+    const reply = result.status === 0 ? parseAnswer(result.stdout) : null;
+    const failures = canaryFailures(reply, args);
+    const report = { ...provenance, exit: result.status ?? result.signal ?? (result.error ? String(result.error.code || result.error) : null), answer: result.stdout, reply, ok: failures.length === 0, failures };
+    if (args.keep) writeFileSync(join(args.keep, "canary.json"), `${JSON.stringify(report, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ ok: report.ok, failures, exit: report.exit }, null, 2)}\n`);
+    process.exit(report.ok ? 0 : 1);
+  }
+  const request = JSON.parse(readFileSync(0, "utf8"));
   const result = await run({ ...command, env }, prompt(request), args.timeoutMs, args.graceMs);
   const answer = result.stdout;
   const reply = result.status === 0 ? parseAnswer(answer) : null;
@@ -300,9 +346,8 @@ if (isMain) {
       request,
       // What ran: the CLI and its arguments (the model among them), the sandbox it ran in, and the
       // names (not values) of the variables it got.
-      command: [args.cli, ...args.cliArgs],
-      sandbox: args.hide.length ? sandboxPrefix(args, bwrap) : null,
-      env: Object.keys(env).sort(),
+      ...provenance,
+      sandbox: args.hide.length ? provenance.sandbox : null,
       exit: result.status ?? result.signal ?? (result.error ? String(result.error.code || result.error) : null),
       answer,
       reply,
