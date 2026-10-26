@@ -123,7 +123,9 @@ test("with network the sandbox has none of its own and runs the CLI behind the f
   assert.equal(file, "bwrap");
   assert.ok(args.includes("--unshare-net"));
   const ro = args.flatMap((a, i) => (a === "--ro-bind" ? [args[i + 1]] : []));
-  assert.ok(ro.includes("/tmp/net-allow-x") && ro.includes("/opt/node/bin/node") && ro.includes(netAllow));
+  assert.ok(ro.includes("/tmp/net-allow-x") && ro.includes(netAllow));
+  // The node install is the operator's to show, libraries and all; one file of it would not run.
+  assert.ok(!ro.includes("/opt/node/bin/node"));
   // Mounted after /tmp's tmpfs, so the socket's directory shows inside it.
   assert.ok(args.indexOf("/tmp/net-allow-x") > args.indexOf("/tmp"));
   const env = Object.fromEntries(args.flatMap((a, i) => (a === "--setenv" ? [[args[i + 1], args[i + 2]]] : [])));
@@ -165,7 +167,9 @@ test("with real bwrap the probe finds no direct network, the denied host refused
   try {
     // The allowed host must be reachable from this machine for the check to pass; api.anthropic.com
     // is what the replays need.
-    const result = spawnSync(process.execPath, [adapter, "--hide", hidden, "--allow-host", "api.anthropic.com", "--probe"], { encoding: "utf8", timeout: 60000 });
+    // This node and its libraries must show in the sandbox: they are under / unless named readable.
+    const install = process.env.NET_ALLOW_TEST_READABLE ? process.env.NET_ALLOW_TEST_READABLE.split(":").flatMap((dir) => ["--readable", dir]) : [];
+    const result = spawnSync(process.execPath, [adapter, "--hide", hidden, ...install, "--allow-host", "api.anthropic.com", "--probe"], { encoding: "utf8", timeout: 60000 });
     const report = JSON.parse(result.stdout);
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.ok(report.found.includes("direct_blocked 1.1.1.1 ENETUNREACH"), report.found.join("\n"));

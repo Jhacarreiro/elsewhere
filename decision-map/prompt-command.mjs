@@ -207,13 +207,14 @@ function parseArgs(argv, env) {
 }
 
 // The CLI as it is run: in the bwrap sandbox when anything is hidden. With network, the sandbox has
-// no network of its own and the CLI runs behind the forwarder to the proxy's socket; the forwarder and
-// the node that runs it are shown read-only wherever they are.
+// no network of its own and the CLI runs behind the forwarder to the proxy's socket. The forwarder is
+// shown read-only wherever it is; the node that runs it (this command's own) must be in the system or
+// readable directories, with whatever libraries it loads, as the CLI's own install must.
 export function modelCommand({ cli, cliArgs, hide, readable = [], writable = [], network }, bwrap = "bwrap", system = SYSTEM_DIRS.filter((dir) => existsSync(dir)), node = process.execPath) {
   if (!hide.length) return { file: cli, args: cliArgs };
   const home = writable[0] || "/tmp";
   const net = network ? {
-    mounts: [dirname(network.socket), node, NET_ALLOW].flatMap((path) => ["--ro-bind", path, path]),
+    mounts: [dirname(network.socket), NET_ALLOW].flatMap((path) => ["--ro-bind", path, path]),
     env: Object.entries(proxyEnv(SANDBOX_PROXY_PORT)).flatMap(([name, value]) => ["--setenv", name, value]),
     wrap: [node, NET_ALLOW, "--forward", network.socket, "--port", String(SANDBOX_PROXY_PORT), "--"],
   } : { mounts: [], env: [], wrap: [] };
@@ -414,12 +415,14 @@ if (isMain) {
     const result = await run({ ...sandbox, env: modelEnv([], process.env) }, "", args.timeoutMs, args.graceMs);
     const found = result.stdout.trim().split("\n").filter(Boolean);
     let exit = result.status ?? result.signal ?? String(result.error?.code || result.error);
+    let stderr = result.stderr;
     if (args.network) {
       const check = await run({ ...modelCommand(networkProbeCommand(args), bwrap), env: modelEnv([], process.env) }, "", args.timeoutMs, args.graceMs);
       found.push(...check.stdout.trim().split("\n").filter(Boolean));
+      stderr += check.stderr;
       if (exit === 0) exit = check.status ?? check.signal ?? String(check.error?.code || check.error);
     }
-    process.stdout.write(`${JSON.stringify({ sandbox: [sandbox.file, ...sandbox.args.slice(0, sandbox.args.indexOf("--"))], exit, found, ...(network ? { network } : {}) }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ sandbox: [sandbox.file, ...sandbox.args.slice(0, sandbox.args.indexOf("--"))], exit, found, ...(network ? { network } : {}), ...(exit !== 0 && stderr ? { stderr: stderr.slice(-2000) } : {}) }, null, 2)}\n`);
     process.exit(exit === 0 ? 0 : 1);
   }
   const command = args.sandboxEnv ? sandboxEnvCommand(args, bwrap) : modelCommand(args, bwrap);
