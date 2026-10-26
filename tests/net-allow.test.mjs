@@ -105,6 +105,26 @@ test("the boundary check passes only when the denied host is refused and each al
       forwarder.close();
     }
   });
+  // A proxy that answers anything but its refusal fails the check, even a 502 or a dropped connection.
+  const dir = mkdtempSync(join(tmpdir(), "net-allow-"));
+  try {
+    for (const reply of ["HTTP/1.1 502 Bad Gateway\r\n\r\n", ""]) {
+      const socket = join(dir, `odd-${reply.length}.sock`);
+      const odd = net.createServer((c) => c.once("data", () => c.end(reply)));
+      await new Promise((done) => odd.listen(socket, done));
+      const forwarder = await startForwarder(socket, 0);
+      try {
+        const result = await checkBoundary({ port: forwarder.address().port, allow: ["*.openai.com"], deny: ["github.com"], direct: [] });
+        assert.equal(result.ok, false);
+        assert.match(result.found[0], /^denied_host_not_refused github\.com /);
+      } finally {
+        forwarder.close();
+        odd.close();
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
   // A proxy that lets everything through fails the check.
   await withProxy(["github.com"], async ({ socket }) => {
     const forwarder = await startForwarder(socket, 0);

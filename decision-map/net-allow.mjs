@@ -175,7 +175,7 @@ function directStatus(address, timeoutMs) {
 
 /**
  * Checks the boundary from inside the sandbox. A host off the allowlist must be refused by the proxy
- * (403); an allowed one must be admitted (200), so a boundary that blocks everything does not pass as
+ * (403; any other answer or error fails); an allowed one must be admitted (200), so a boundary that blocks everything does not pass as
  * a working one; wildcard entries are not checked, having no single name.
  * @returns {Promise<{ok: boolean, found: string[]}>}
  */
@@ -189,8 +189,10 @@ export async function checkBoundary({ port, allow, deny, direct = ["1.1.1.1", "8
   }
   for (const host of deny) {
     const status = await tunnelStatus(port, host, timeoutMs);
-    found.push(`${status === 200 ? "denied_host_admitted" : "denied_host_refused"} ${host} ${status}`);
-    if (status === 200) ok = false;
+    // Only the proxy's own refusal proves the allowlist held: a timeout or a 502 could come from an
+    // open proxy whose destination happened to be down.
+    found.push(`${status === 403 ? "denied_host_refused" : status === 200 ? "denied_host_admitted" : "denied_host_not_refused"} ${host} ${status}`);
+    if (status !== 403) ok = false;
   }
   for (const host of allow.filter((h) => !h.startsWith("*."))) {
     const status = await tunnelStatus(port, host, timeoutMs);
