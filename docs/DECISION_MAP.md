@@ -11,6 +11,7 @@ Small, dependency-free Node modules in [`decision-map/`](../decision-map):
 | `filter.mjs` | 5 | Selects which records the map shows, by impact, uncertainty, cost and reversibility. Records are never changed or dropped from the source. |
 | `map-run.mjs` | - | Extracts and renders one run and keeps the result in that run's `decision-map/` folder, for use at the end of every run. |
 | `generate.mjs` | Phase 2, 2 | Proposes generated alternatives per decision through a configured command, from pre-decision artifacts only. Read-only. See [generated alternatives](#generated-alternatives). |
+| `prompt-command.mjs` | Phase 2, 4 | A generator command that writes the request as a plain-text prompt for any model CLI reading stdin, and reads the JSON reply out of its answer. `--keep <dir>` keeps every exchange. |
 
 ## Usage
 

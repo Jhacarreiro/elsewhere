@@ -13,8 +13,8 @@ This is the protocol for [roadmap](ROADMAP.md) Phase 2 step 4: run the [generato
 ## Generator
 
 - One command, configured once and used for every decision: a model reached through the Development Cycle's own routing, with the model named in the results. No other model is tried after looking at the output. If the command fails for a decision, that decision counts as withheld; it is not retried with a different prompt or model.
-- The command sees only what the generator gives it: the decision's question, stage and time, and the artifacts that provably existed, unchanged, before the decision.
-- Each command reply is kept next to the records, so every count below can be recomputed.
+- The command sees only what the generator gives it: the decision's question, stage and time, and the artifacts that provably existed, unchanged, before the decision. The command is [`decision-map/prompt-command.mjs`](../decision-map/prompt-command.mjs) in front of the model's CLI. If that CLI is an agent that can read files or run commands, it is told not to, it runs with commands sandboxed read-only and without network, and it runs in a mount namespace where the run's directories, the adapter's run data, the delivered code and the records are hidden. A model that could read what happened after the decision would make the evaluation worthless.
+- Each exchange (request, raw answer, parsed reply) is kept next to the records with `--keep`, so every count below can be recomputed, including assumptions the rules dropped.
 
 ## Measures and what counts as a positive result
 
