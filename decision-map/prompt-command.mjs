@@ -9,7 +9,7 @@
 // reply), so counts that need what the model proposed before any rule dropped it can be recomputed.
 //
 // With --hide, the CLI runs under bwrap (Linux) in a sandbox that shows nothing of the host by default:
-// only the system directories (SYSTEM_DIRS) and the --readable ones (where the CLI is installed, say)
+// only the system directories and the few /etc files a networked CLI needs (SYSTEM_DIRS) and the --readable ones (where the CLI is installed, say)
 // are there, read-only; the --writable directories (the CLI's own state) can be written; each hidden
 // directory is an empty tmpfs; /tmp is a private tmpfs, /dev and /proc are its own, and the root is
 // read-only. HOME is the first writable directory (or /tmp), which is also where it starts. A CLI that
@@ -77,7 +77,14 @@ export function modelEnv(names, from) {
 const depth = (dir) => dir.split("/").filter(Boolean).length;
 
 // Always shown in the sandbox, read-only, where they exist.
-export const SYSTEM_DIRS = ["/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/etc"];
+// Of /etc, only what a networked CLI needs to run: name resolution, TLS roots, user and group
+// names, the time zone, the loader cache and the alternatives links. The rest of /etc stays out.
+export const SYSTEM_DIRS = [
+  "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64",
+  "/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf", "/etc/host.conf", "/etc/gai.conf",
+  "/etc/ssl/certs", "/etc/ca-certificates", "/etc/pki/tls/certs", "/etc/pki/ca-trust",
+  "/etc/passwd", "/etc/group", "/etc/localtime", "/etc/ld.so.cache", "/etc/alternatives",
+];
 
 // The most the model may print; past it the model is stopped and the decision withheld.
 export const MAX_ANSWER_BYTES = 8 * 1024 * 1024;

@@ -151,6 +151,7 @@ test("--hide runs the CLI under bwrap showing only system and readable directori
   const { args } = modelCommand({ cli: "codex", cliArgs: [], hide: [hidden] });
   const shown = args.flatMap((a, i) => (a === "--ro-bind" ? [args[i + 1]] : []));
   assert.ok(shown.every((dir) => SYSTEM_DIRS.includes(dir)), shown.join(" "));
+  assert.ok(!shown.includes("/etc") && !SYSTEM_DIRS.includes("/etc"));
   assert.equal(args[args.indexOf("HOME") + 1], "/tmp");
   const log = join(hidden, "..", `${hidden.split("/").pop()}.bwrap-log`);
   const saved = { bwrap: process.env.DECISION_MAP_BWRAP, log: process.env.FAKE_BWRAP_LOG };
