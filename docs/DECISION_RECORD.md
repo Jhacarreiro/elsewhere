@@ -25,6 +25,17 @@ An emitting adapter appends one record per line to `decisions.jsonl` in its atte
 8. **Stable ids.** The id is derived from the run id, the primary evidence pointer and an anchor, so extracting the same run twice gives the same ids.
 9. **Public examples are sanitized.** Excerpts are short, and records published in this repository must pass `npm run audit:public`.
 
+## Generated alternatives (Phase 2)
+
+`generated_alternatives` is an optional section for alternatives proposed after the run by a generator. It is kept apart from `alternatives`, which only reports what the run's own artifacts say, so a reader never confuses the two.
+
+- **Status.** `generated` means the generator ran on verified pre-decision evidence; zero items is a valid result. `withheld` means nothing was generated, and `reason` says why. A decision without a known time is always withheld, because there is no cutoff for the evidence.
+- **Boundary.** `boundary` is the decision time used as the cutoff, with its source.
+- **Assumptions.** Each alternative lists its assumptions. A `grounded` assumption cites evidence with a `version_proof` showing which version of the artifact existed at the decision time: `immutable_copy`, `pre_decision_hash` or `pre_decision_time`. An `unsupported` assumption carries no evidence and is shown as such. Every alternative has at least one grounded assumption.
+- **Consequences and classification.** `potential_consequences` are always hypotheses. Each item is classified `generated` and is never executed.
+
+[`decision-map/generated.mjs`](../decision-map/generated.mjs) applies these rules to a record. It drops evidence without a version proof, then drops assumptions left without evidence and alternatives left without a grounded assumption, and reports what it dropped and why. Whether a version proof is true is checked against the files by the generator, which is Phase 2 step 2.
+
 ## Mapping from existing artifacts
 
 | Source | `stage` | `decided_by.kind` | `state` | `alternatives.status` | Classification |

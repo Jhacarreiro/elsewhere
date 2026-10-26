@@ -5,6 +5,6 @@
   "scripts": {
     "audit:public": "node scripts/audit-public.mjs",
     "audit:negative": "node scripts/audit-negative.mjs",
-    "test": "node --test tests/decision-map.test.mjs"
+    "test": "node --test tests/decision-map.test.mjs tests/generated.test.mjs"
   }
 }
