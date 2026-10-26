@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createReader } from "../decision-map/extract.mjs";
 import { generateAlternatives } from "../decision-map/generate.mjs";
-import { DEFAULT_MODEL_TIMEOUT_MS, killGrace, MODEL_ENV, modelCommand, modelDeadline, parseAnswer, SYSTEM_DIRS } from "../decision-map/prompt-command.mjs";
+import { canaryFailures, DEFAULT_MODEL_TIMEOUT_MS, killGrace, MODEL_ENV, mountedInside, modelCommand, modelDeadline, parseAnswer, SYSTEM_DIRS } from "../decision-map/prompt-command.mjs";
 import { spawnSync } from "node:child_process";
 import { DEFAULT_TIMEOUT_MS } from "../decision-map/generate.mjs";
 
@@ -256,6 +256,20 @@ test("with real bwrap the probe finds hidden directories empty, the root read-on
   }
 });
 
+test("with real bwrap a readable directory inside a hidden one stays readable and the rest stays hidden", { skip: !hasBwrap && "bwrap is not available here" }, () => {
+  const hidden = mkdtempSync(join(tmpdir(), "prompt-hidden-"));
+  try {
+    writeFileSync(join(hidden, "auth.json"), "{}\n");
+    mkdirSync(join(hidden, "npm"));
+    writeFileSync(join(hidden, "npm", "cli.js"), "\n");
+    const { status, report } = probe(["--hide", hidden, "--readable", join(hidden, "npm")]);
+    assert.equal(status, 0, JSON.stringify(report));
+    assert.deepEqual(report.found, [`hidden_empty ${hidden}`, "root_read_only"]);
+  } finally {
+    rmSync(hidden, { recursive: true, force: true });
+  }
+});
+
 test("--sandbox-env runs the CLI outside and hands it the same sandbox as a JSON argv prefix", () => {
   const hidden = mkdtempSync(join(tmpdir(), "prompt-hidden-"));
   try {
@@ -293,6 +307,12 @@ test("--canary passes through the full command when the model's HOME is the writ
     rmSync(hidden, { recursive: true, force: true });
     rmSync(writable, { recursive: true, force: true });
   }
+});
+
+test("a hidden directory may show only the mount points of directories named inside it", () => {
+  assert.deepEqual(mountedInside("/s", { readable: ["/s/npm/lib", "/s2/x", "/t"], writable: ["/s/scratch"] }), ["npm", "scratch"]);
+  assert.deepEqual(canaryFailures({ home: "/w", hidden: { "/s": ["npm"] } }, { hide: ["/s"], readable: ["/s/npm"], writable: ["/w"] }), []);
+  assert.deepEqual(canaryFailures({ home: "/w", hidden: { "/s": ["npm", "auth.json"] } }, { hide: ["/s"], readable: ["/s/npm"], writable: ["/w"] }), ["hidden_not_empty /s"]);
 });
 
 test("--canary fails when the model sees a hidden directory's files or another HOME, as a CLI ignoring the sandbox would", () => {

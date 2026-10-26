@@ -37,7 +37,7 @@
 // --canary sends, through that same full command, a request that asks the model to run commands
 // printing HOME and listing each hidden directory, instead of reading a decision request. It passes
 // only if HOME is the first writable directory (or /tmp) and each hidden directory is empty or
-// absent, and prints the report (kept as canary.json with --keep). The probe checks the sandbox;
+// absent (but for the mount points of directories named inside it), and prints the report (kept as canary.json with --keep). The probe checks the sandbox;
 // the canary checks that the CLI really runs its model in it, which a --sandbox-env CLI that ignores
 // the variable would not. It guards against a misconfigured command, not against a model that lies.
 //
@@ -206,11 +206,19 @@ export function modelCommand({ cli, cliArgs, hide, readable = [], writable = [] 
   };
 }
 
-// Run in the sandbox by --probe, with the hidden directories, then "--", then the writable ones.
+// What may show inside a hidden directory: the mount points of readable or writable directories
+// named inside it (the CLI's install inside its state directory, say), by their first name below it.
+export function mountedInside(dir, { readable = [], writable = [] }) {
+  return [...new Set([...readable, ...writable].filter((d) => d.startsWith(`${dir}/`)).map((d) => d.slice(dir.length + 1).split("/")[0]))];
+}
+
+// Run in the sandbox by --probe, with each hidden directory and the names that may show in it (one per
+// line), then "--", then the writable ones.
 const PROBE = `ok=0
 while [ "$1" != -- ]; do
-  if [ -z "$(ls -A "$1")" ]; then echo "hidden_empty $1"; else echo "hidden_not_empty $1"; ok=1; fi
-  shift
+  if [ -z "$2" ]; then left=$(ls -A "$1"); else left=$(ls -A "$1" | grep -vxF "$2"); fi
+  if [ -z "$left" ]; then echo "hidden_empty $1"; else echo "hidden_not_empty $1"; ok=1; fi
+  shift 2
 done
 shift
 if touch /.prompt-command-probe 2>/dev/null; then rm -f /.prompt-command-probe; echo "root_writable"; ok=1; else echo "root_read_only"; fi
@@ -230,7 +238,8 @@ export function sandboxEnvCommand(args, bwrap = "bwrap") {
 }
 
 export function probeCommand({ hide, readable, writable }) {
-  return { cli: "sh", cliArgs: ["-c", PROBE, "probe", ...hide, "--", ...writable], hide, readable, writable };
+  const mounts = { readable, writable };
+  return { cli: "sh", cliArgs: ["-c", PROBE, "probe", ...hide.flatMap((dir) => [dir, mountedInside(dir, mounts).join("\n")]), "--", ...writable], hide, readable, writable };
 }
 
 export function canaryPrompt({ hide }) {
@@ -249,14 +258,15 @@ export function canaryPrompt({ hide }) {
 }
 
 // What a canary answer shows wrong; empty when it passes.
-export function canaryFailures(reply, { hide, writable = [] }) {
+export function canaryFailures(reply, { hide, readable = [], writable = [] }) {
   if (!reply) return ["no_answer"];
   const failures = [];
   const home = writable[0] || "/tmp";
   if (reply.home !== home) failures.push(`home ${JSON.stringify(reply.home ?? null)}`);
   for (const dir of hide) {
     const entries = reply.hidden?.[dir];
-    if (entries !== "absent" && !(Array.isArray(entries) && entries.length === 0)) failures.push(`hidden_not_empty ${dir}`);
+    const allowed = mountedInside(dir, { readable, writable });
+    if (entries !== "absent" && !(Array.isArray(entries) && entries.every((name) => allowed.includes(name)))) failures.push(`hidden_not_empty ${dir}`);
   }
   return failures;
 }
