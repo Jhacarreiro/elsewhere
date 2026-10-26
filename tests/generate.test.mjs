@@ -69,6 +69,19 @@ test("an artifact changed after the decision is never shown, even with its modif
   });
 });
 
+test("the command never sees the chosen option, its outcome or the extractor's list of alternatives", () => {
+  withRun({ "plan.md": "Plan" }, (dir, reader) => {
+    const input = {
+      ...decision(later(3600000), ["plan.md"]),
+      chosen: { summary: "Attempt completed with exit 0 at a later time" },
+      alternatives: { status: "listed", items: [{ summary: "Written after the decision" }] },
+    };
+    const { records } = generateAlternatives({ records: [input], reader, command: command("request") });
+    const seen = JSON.parse(records[0].generated_alternatives.items[0].summary);
+    assert.deepEqual(Object.keys(seen).sort(), ["decided_at", "id", "question", "stage"]);
+  });
+});
+
 test("a decision without a time, or without pre-decision artifacts, is withheld without calling the command", () => {
   withRun({ "plan.md": "Plan" }, (dir, reader) => {
     const { records } = generateAlternatives({

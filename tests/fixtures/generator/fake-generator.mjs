@@ -8,6 +8,10 @@ if (mode === "garbage") {
   process.stdout.write("not json");
   process.exit(0);
 }
+if (mode === "request") {
+  process.stdout.write(JSON.stringify({ alternatives: [{ summary: JSON.stringify(request.decision), assumptions: [{ text: "Seen", citations: [{ ref: "a1", quote: request.artifacts[0].content.slice(0, 10) }] }], potential_consequences: [], uncertainty: { level: "low" } }] }));
+  process.exit(0);
+}
 if (mode === "echo") {
   process.stdout.write(JSON.stringify({ alternatives: [{ summary: JSON.stringify(request.artifacts.map((a) => a.path)), assumptions: [{ text: "Seen", citations: [{ ref: "a1", quote: request.artifacts[0].content.slice(0, 10) }] }], potential_consequences: [], uncertainty: { level: "low" } }] }));
   process.exit(0);

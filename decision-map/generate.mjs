@@ -53,13 +53,15 @@ function request(record, artifacts) {
     task: "Propose zero or more reasonable alternatives to this decision, using only the artifacts given. "
       + "Cite each grounded assumption with the artifact ref and a verbatim quote from it; an assumption "
       + "without a citation is shown as unsupported. Do not rank alternatives or predict outcomes as facts.",
+    // Only what was known when the decision was asked. The chosen option, its outcome and the listed
+    // alternatives are summarised by the extractor from artifacts that may be written later (an
+    // attempt's summary carries its final status), so they would let hindsight in; what the run knew
+    // reaches the command only through the pre-decision artifacts below.
     decision: {
       id: record.id,
       stage: record.stage,
       question: record.question,
       decided_at: record.time.value,
-      chosen: record.chosen?.summary ?? null,
-      listed_alternatives: (record.alternatives?.items || []).map((i) => i.summary),
     },
     artifacts: artifacts.map((a) => ({
       ref: a.ref,
