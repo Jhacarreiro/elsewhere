@@ -39,3 +39,34 @@ Each measure has a threshold set now. A measure below its threshold is a null re
 ## Publication
 
 This repository is public. The results section gives the counts, the shares, the thresholds and the model, and names decisions only by stage and question. Artifact text, quotes and per-decision ratings stay in the private run directory and are not committed here.
+
+## Results (2026-10-26)
+
+Added after the run. Nothing above this section was changed.
+
+**Setup.** Generator at `fa66c93`. Model: Codex `gpt-5.6-sol` through the Development Cycle's Codex bridge, with `--sandbox read-only`. The probe and the canary passed with the same arguments right before the run, and their reports are kept with the results. Two additions to the protocol, both stricter than it requires:
+- More directories were hidden: besides the run and OpenClaw's state, the adapter's state, both checkouts of the delivered code and the host's shared scratch directory.
+- Each decision got a fresh writable directory (the CLI's `HOME`), so nothing one decision's model left behind could reach the next.
+
+**Ratings.** The owner delegated measures 2 and 3 to the operator who ran the evaluation. So they are the operator's judgment, not the owner's, and the operator also knew how the run ended.
+
+| | Count |
+| --- | --- |
+| Decisions | 81 |
+| With pre-decision artifacts | 79 |
+| Withheld (no artifact shown to predate the decision) | 2: one `planning`, one `follow_up` |
+| Command failures | 0 |
+| Alternatives proposed / kept | 244 / 244 |
+| Assumptions proposed | 690 |
+| Grounded after the citation check | 669 |
+| Unsupported (no citation) | 0 |
+| Citation failed, assumption dropped | 21 |
+
+1. **Grounding: 669 of 690, 97% (threshold 60%). Positive.** Grounded means only that the quote is verbatim in an artifact that predates the decision. It does not mean the assumption is right or that the alternative is new. Many alternatives restate options the artifacts already listed, such as the stronger-authentication options a pending decision enumerated itself.
+2. **Worth considering: 9 of 9 (threshold 30%). Positive.** The rule picked 10 decisions: 7 `review` decisions with `high` impact (which findings stand after review rounds 0–3, across the two review passes), the `review` decision that did not complete (does the council approve the delivered code), the `implementation` decision still pending (which stronger operator-approval authentication should replace the interim check), and the `planning` decision taken by a human (approve the implementation plan). The plan approval was withheld, so 9 rated decisions got alternatives. This measure is weak: an alternative that restates a listed option counts.
+3. **Would it have mattered.**
+   - **Changed the decision: 5 of 10.** All five carry the same alternative in different words: take the operator-authentication question out of the review loop and put it to the owner first. In round 0 of both review passes and round 2 of the first, the review would have stopped and escalated instead of correcting an interim check, or tracked the question as the owner's decision instead of a standing finding. In the pending authentication decision, the generated "operator-only approval path" is the one the owner later chose. In the incomplete council approval, the review would have paused for that decision. In the other four review rounds, the alternatives regroup the same findings without a different outcome.
+   - **Review that did not converge within the correction cap: yes, earlier.** At round 0 of both review passes, alternatives point at the cause the run reached only at the cap: findings tied to the undecided authentication question keep standing in every round, so corrections cannot converge until that question is decided.
+   - **Finding that an agent could forge an approval: no.** It was already known before this run started, and the alternatives cite it rather than find it.
+
+**Limits.** One run, one model, and ratings by someone who knew the outcome (see Known limits). Findings that stand across rounds repeat in the run's records, so the five "changed the decision" cases are one idea seen five times, not five independent ones.
