@@ -167,7 +167,8 @@ test("with real bwrap the probe finds no direct network, the denied host refused
   try {
     // The allowed host must be reachable from this machine for the check to pass; api.anthropic.com
     // is what the replays need.
-    // This node and its libraries must show in the sandbox: they are under / unless named readable.
+    // This node and its libraries must show in the sandbox: name their directories here when they are
+    // outside the system ones.
     const install = process.env.NET_ALLOW_TEST_READABLE ? process.env.NET_ALLOW_TEST_READABLE.split(":").flatMap((dir) => ["--readable", dir]) : [];
     const result = spawnSync(process.execPath, [adapter, "--hide", hidden, ...install, "--allow-host", "api.anthropic.com", "--probe"], { encoding: "utf8", timeout: 60000 });
     const report = JSON.parse(result.stdout);

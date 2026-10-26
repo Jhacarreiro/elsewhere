@@ -51,6 +51,7 @@ The [v0.2 product contract](briefs/web-v0.2.md) extends that prototype vision to
 - [Decision provenance inventory](docs/DECISION_PROVENANCE.md) and [decision record v0](docs/DECISION_RECORD.md) — Phase 1 steps 1 and 2
 - [Decision map](docs/DECISION_MAP.md) — read-only extractor, relevance filter, static HTML map (Phase 1 steps 3 to 7) and generator of contextual alternatives shown in the map (Phase 2 steps 2 and 3)
 - [Checkpoint record v0](docs/CHECKPOINT_RECORD.md) — the pre-decision starting point a replay needs, when it is adequate, and a read-only builder for it (Phase 3 steps 1 and 2)
+- [Isolated replay](docs/REPLAY.md) — the network boundary a replay runs behind: no network of its own, only the model providers through an allowlist proxy (Phase 3 step 3, in progress)
 - [The Roads Not Taken — working thesis](docs/THESIS_DRAFT.md) — central argument, hypotheses and falsification risks
 - [Conversation synthesis](docs/CONVERSATION_NOTES.md) — key choices, conclusions and unresolved questions
 
