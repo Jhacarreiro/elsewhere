@@ -1,6 +1,6 @@
 # Checkpoint record v0
 
-**Status:** proposed for [roadmap](ROADMAP.md) Phase 3 step 1. Schema: [`checkpoint-record.v0.schema.json`](../schemas/checkpoint-record.v0.schema.json). Rules: [`decision-map/checkpoint.mjs`](../decision-map/checkpoint.mjs).
+**Status:** proposed for [roadmap](ROADMAP.md) Phase 3 step 1, with the step 2 builder. Schema: [`checkpoint-record.v0.schema.json`](../schemas/checkpoint-record.v0.schema.json). Rules: [`decision-map/checkpoint.mjs`](../decision-map/checkpoint.mjs). Builder: [`decision-map/checkpoint-build.mjs`](../decision-map/checkpoint-build.mjs).
 
 A checkpoint record describes the point just before one decision, as the stage that made it saw it. A replay (Phase 3 step 3) starts from it; nothing else about the original run may reach the replay. It is a separate record from the [decision record](DECISION_RECORD.md) and points at one by `decision_id`, so decision records stay unchanged.
 
@@ -26,6 +26,32 @@ A checkpoint record describes the point just before one decision, as the stage t
 An inadequate checkpoint is reported as it is. It is not patched by hand; the replay moves to an earlier checkpoint that is adequate, or does not run.
 
 A known difference does not make a checkpoint inadequate: models and tools change, and a replay rarely runs with exactly the original ones. It limits what the replay can show, and results must state it.
+
+## Builder
+
+```sh
+node decision-map/checkpoint-build.mjs --spec SPEC.json --run RUN_DIR [--adapter ADAPTER_DIR] --repository REPO_DIR --out NEW_DIR
+```
+
+The spec names the decision, the run, the stage, the checkpoint time and what the stage consumed: commits by ref, and files by root and path. It also carries `known_differences`. Everything else the builder establishes itself and never takes from the spec:
+
+- **Commits** are resolved to their full id with `git rev-parse`; a ref the repository does not have fails.
+- **Files** are read through the same pinned, symlink-refusing reader as the extractor. The hash is computed and `written_at` is the later of the write and change times.
+- **Diffs** that name a `diff_base` commit are checked: the diff must apply to that commit (`git apply --check` against a throwaway index outside the repository), and when the spec gives `expect_paths`, from a diff stat the stage recorded, it must touch exactly those paths. A diff cut off at a file boundary still applies, so the path check catches what `git apply` cannot.
+- **Excluded** lists the files beside each input that were written at or after the checkpoint time, up to 500. Later rounds' outputs usually sit next to the round's own input, so these are the likeliest leaks. The replay harness hides the roots as a whole; this list is what the record names.
+
+The output directory must be new and outside the run, adapter and repository roots. `checkpoint.json` is always written, so an inadequate checkpoint is reported as it is. Copies of the inputs, under `inputs/<root>/<path>`, are written only for an adequate one. The exit code is 0 for adequate, 2 for inadequate and 1 for an error. The builder never writes into the run, the adapter state or the repository: git only reads objects.
+
+## On the baseline run
+
+Built on the owner's machine on 2026-10-26 for the Phase 3 target, review round 0 of the baseline run. The bundles are private.
+
+| Checkpoint | Inputs | Result |
+| --- | --- | --- |
+| Start of review round 0 | base commit, the diff the reviewers saw, the review context, provider routing | Inadequate: the diff does not apply to its base commit. It was stored cut off mid-change, and the reviewers' working tree was overwritten later in the run. |
+| Start of the implementation pass before it | base commit, approved plan, implementation request and prompt, launch record, provider routing | Adequate. |
+
+Both record one known difference: the run did not record the adapter version, and the adapter has been upgraded since. Provider routing has not changed since before the run. Per the roadmap, the replay therefore starts from the implementation pass.
 
 ## Example
 
@@ -62,5 +88,5 @@ Synthetic, shaped like a review round whose input diff was stored truncated:
 
 ## Open questions
 
-- Whether a working tree can be rebuilt adequately from a stage's later outputs (for example an agent's transcript of the edits it made), and what proof that would carry. Step 2 tries it on the baseline run and reports the result either way.
+- Whether a working tree can be rebuilt adequately from a stage's later outputs, for example an agent's transcript of the edits it made, and what proof that would carry. The builder does not try: such a rebuild is an inference, not a version proof.
 - Which configuration a Development Cycle run records at all. Where it records nothing, `recorded` is null and the difference cannot be ruled out.
