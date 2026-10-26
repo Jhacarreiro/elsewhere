@@ -87,6 +87,8 @@ function runCommand(command, input, timeoutMs) {
     input: JSON.stringify(input),
     encoding: "utf8",
     timeout: timeoutMs,
+    // A command can then stop its own work in time, as prompt-command.mjs does.
+    env: { ...process.env, DECISION_MAP_GENERATOR_TIMEOUT_MS: String(timeoutMs), DECISION_MAP_GENERATOR_DEADLINE: String(Date.now() + timeoutMs) },
     maxBuffer: 4 * 1024 * 1024,
     stdio: ["pipe", "pipe", "pipe"],
   });
