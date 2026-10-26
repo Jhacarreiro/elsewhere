@@ -125,3 +125,37 @@ test("the command line reads a run, writes records to stdout and leaves the run 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("records and artifacts come from the same pinned adapter tree, even if its path is replaced", async () => {
+  const { extract, pinRoot } = await import("../decision-map/extract.mjs");
+  const { closeSync, renameSync, mkdirSync } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "generate-adapter-"));
+  try {
+    const run = join(dir, "run");
+    const adapter = join(dir, "adapter");
+    cpSync(runFixture, run, { recursive: true });
+    cpSync(new URL("./fixtures/octopus/", import.meta.url).pathname, adapter, { recursive: true });
+    const runRoot = pinRoot("run", run);
+    const adapterRoot = pinRoot("adapter", adapter);
+    try {
+      const records = extract({ runDir: run, runRoot, adapterRoot });
+      const adapterFiles = records.flatMap((r) => r.evidence).filter((e) => e.root === "adapter");
+      assert.ok(adapterFiles.length > 0);
+      // Swap a different, empty tree in at the adapter path after extraction.
+      renameSync(adapter, join(dir, "adapter-old"));
+      mkdirSync(adapter);
+      const reader = createReader({ runDir: run, runRoot, adapterRoot });
+      try {
+        const rel = adapterFiles[0].pointer.split("#")[0];
+        assert.equal(reader.read("adapter", rel)?.sha, adapterFiles[0].sha256, "the reader still sees the tree the records came from");
+      } finally {
+        reader.close();
+      }
+    } finally {
+      closeSync(adapterRoot.fd);
+      closeSync(runRoot.fd);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -89,14 +89,14 @@ function readContained(root, rel, maxBytes) {
 }
 
 // One reader per extraction: caches file contents and hashes. Call close() when done.
-// A caller that already pinned the run directory passes it as runRoot; the reader then reads from that
-// same descriptor and leaves closing it to the caller.
-export function createReader({ runDir, adapterDir = null, maxBytes = MAX_ARTIFACT_BYTES, runRoot = null }) {
+// A caller that already pinned the run (or adapter) directory passes it as runRoot (or adapterRoot); the
+// reader then reads from that same descriptor and leaves closing it to the caller.
+export function createReader({ runDir, adapterDir = null, maxBytes = MAX_ARTIFACT_BYTES, runRoot = null, adapterRoot = null }) {
   const roots = { run: runRoot || (runDir && pinRoot("--run", runDir)) };
   const owned = new Set(runRoot ? [] : ["run"]);
   try {
-    roots.adapter = adapterDir && pinRoot("--adapter", adapterDir);
-    owned.add("adapter");
+    roots.adapter = adapterRoot || (adapterDir && pinRoot("--adapter", adapterDir));
+    if (!adapterRoot) owned.add("adapter");
   } catch (e) {
     if (roots.run && owned.has("run")) closeSync(roots.run.fd);
     throw e;
@@ -636,14 +636,14 @@ const instant = (r) => {
   return Number.isNaN(t) ? Infinity : t;
 };
 
-export function extract({ runDir, adapterDir = null, maxBytes, runRoot = null }) {
-  const reader = createReader({ runDir, adapterDir, maxBytes, runRoot });
+export function extract({ runDir, adapterDir = null, maxBytes, runRoot = null, adapterRoot = null }) {
+  const reader = createReader({ runDir, adapterDir, maxBytes, runRoot, adapterRoot });
   let records;
   try {
     const status = reader.json("run", "status.json");
     if (!status) throw new Error(`No readable status.json in ${runDir}`);
     const runId = String(status.runId || basename(runDir));
-    records = [...controlPlaneRecords(reader, status, runId), ...(adapterDir ? octopusRecords(reader, status, runId) : [])];
+    records = [...controlPlaneRecords(reader, status, runId), ...(adapterDir || adapterRoot ? octopusRecords(reader, status, runId) : [])];
   } finally {
     reader.close();
   }

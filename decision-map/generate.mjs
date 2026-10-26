@@ -228,12 +228,15 @@ if (isMain) {
     if (args.help) {
       process.stderr.write(`${JSON.stringify({ ok: true, usage: USAGE })}\n`);
     } else {
-      // Records and artifacts are read from the same pinned run directory.
+      // Records and artifacts are read from the same pinned run and adapter directories, so swapping
+      // either path between extraction and generation cannot make them come from different trees.
       const runRoot = pinRoot("run directory", args.runDir);
+      let adapterRoot = null;
       let reader = null;
       try {
-        const records = extract({ runDir: args.runDir, adapterDir: args.adapterDir, runRoot });
-        reader = createReader({ runDir: args.runDir, adapterDir: args.adapterDir, runRoot });
+        if (args.adapterDir) adapterRoot = pinRoot("--adapter", args.adapterDir);
+        const records = extract({ runDir: args.runDir, runRoot, adapterRoot });
+        reader = createReader({ runDir: args.runDir, runRoot, adapterRoot });
         const wanted = new Set(args.decisions);
         const result = generateAlternatives({
           records,
@@ -254,6 +257,7 @@ if (isMain) {
         })}\n`);
       } finally {
         reader?.close();
+        if (adapterRoot) closeSync(adapterRoot.fd);
         closeSync(runRoot.fd);
       }
     }
