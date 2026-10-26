@@ -6,11 +6,19 @@
 //
 // With --keep, every exchange is written to <dir>/<decision id>.json (request, raw answer, parsed
 // reply), so counts that need what the model proposed before any rule dropped it can be recomputed.
+//
+// The model's deadline must be shorter than generate.mjs's own (--timeout-seconds there, 300 by
+// default): this command then stops the model and keeps the failed exchange itself, instead of being
+// killed with the model still running and nothing kept.
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DEFAULT_TIMEOUT_MS } from "./generate.mjs";
 
-const USAGE = "Usage: node decision-map/prompt-command.mjs [--keep <dir>] [--timeout-seconds <n>] -- <cli> [args...]";
+// Leaves time, inside generate.mjs's default deadline, to stop the model and write the kept exchange.
+export const DEFAULT_MODEL_TIMEOUT_MS = DEFAULT_TIMEOUT_MS - 30000;
+
+const USAGE = `Usage: node decision-map/prompt-command.mjs [--keep <dir>] [--timeout-seconds <n, default ${DEFAULT_MODEL_TIMEOUT_MS / 1000}, below generate.mjs's>] -- <cli> [args...]`;
 
 export function prompt(request) {
   const artifacts = request.artifacts.map((a) => [
@@ -63,7 +71,7 @@ function parseArgs(argv) {
   const split = argv.indexOf("--");
   if (split === -1 || split === argv.length - 1) throw new Error(`Missing model command after --. ${USAGE}`);
   const own = argv.slice(0, split);
-  const args = { cli: argv[split + 1], cliArgs: argv.slice(split + 2), timeoutMs: 600000 };
+  const args = { cli: argv[split + 1], cliArgs: argv.slice(split + 2), timeoutMs: DEFAULT_MODEL_TIMEOUT_MS };
   for (let i = 0; i < own.length; i += 1) {
     if (own[i] === "--keep" && i + 1 < own.length) args.keep = own[++i];
     else if (own[i] === "--timeout-seconds" && Number(own[i + 1]) > 0) args.timeoutMs = Number(own[++i]) * 1000;

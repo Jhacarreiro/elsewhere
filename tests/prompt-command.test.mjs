@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createReader } from "../decision-map/extract.mjs";
 import { generateAlternatives } from "../decision-map/generate.mjs";
-import { parseAnswer } from "../decision-map/prompt-command.mjs";
+import { DEFAULT_MODEL_TIMEOUT_MS, parseAnswer } from "../decision-map/prompt-command.mjs";
+import { DEFAULT_TIMEOUT_MS } from "../decision-map/generate.mjs";
 
 const adapter = new URL("../decision-map/prompt-command.mjs", import.meta.url).pathname;
 const model = new URL("./fixtures/generator/fake-model.mjs", import.meta.url).pathname;
@@ -21,13 +22,13 @@ const decision = {
   evidence: [{ artifact: "x", root: "run", pointer: "plan.md", sha256: "b".repeat(64) }],
 };
 
-function generate(mode, keep) {
+function generate(mode, keep, own = []) {
   const dir = mkdtempSync(join(tmpdir(), "prompt-command-"));
   try {
     writeFileSync(join(dir, "plan.md"), "The plan needs the owner's approval first.\nMore text.\n");
     const reader = createReader({ runDir: dir });
     try {
-      const args = [adapter, ...(keep ? ["--keep", keep] : []), "--", process.execPath, model, mode];
+      const args = [adapter, ...(keep ? ["--keep", keep] : []), ...own, "--", process.execPath, model, mode];
       return generateAlternatives({ records: [decision], reader, command: { file: process.execPath, args, label: "fake-model" } }).records[0].generated_alternatives;
     } finally {
       reader.close();
@@ -65,4 +66,18 @@ test("the answer parser takes the alternatives object out of surrounding text", 
   assert.deepEqual(parseAnswer('Sure: {"alternatives": []} and {stray}'), { alternatives: [] });
   assert.equal(parseAnswer('{"other": 1}'), null);
   assert.equal(parseAnswer("no json"), null);
+});
+
+test("a model past its deadline is stopped and its exchange kept, inside the generator's own deadline", () => {
+  assert.ok(DEFAULT_MODEL_TIMEOUT_MS < DEFAULT_TIMEOUT_MS);
+  const keep = mkdtempSync(join(tmpdir(), "prompt-keep-"));
+  try {
+    const section = generate("slow", keep, ["--timeout-seconds", "1"]);
+    assert.equal(section.status, "withheld");
+    const kept = JSON.parse(readFileSync(join(keep, `${decision.id}.json`), "utf8"));
+    assert.equal(kept.exit, "SIGTERM");
+    assert.equal(kept.reply, null);
+  } finally {
+    rmSync(keep, { recursive: true, force: true });
+  }
 });
