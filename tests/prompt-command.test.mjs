@@ -214,3 +214,16 @@ test("with real bwrap the probe finds hidden directories empty, the root read-on
     rmSync(writable, { recursive: true, force: true });
   }
 });
+
+test("--sandbox-env runs the CLI outside and hands it the same sandbox as a JSON argv prefix", () => {
+  const hidden = mkdtempSync(join(tmpdir(), "prompt-hidden-"));
+  try {
+    withKeep((keep, kept) => {
+      const section = generate("env", keep, ["--hide", hidden, "--writable", "/w", "--sandbox-env", "APP_SERVER_PREFIX"], { modelArgs: ["APP_SERVER_PREFIX"] });
+      assert.equal(section.status, "generated");
+      assert.deepEqual(JSON.parse(kept().reply.value), ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--bind", "/w", "/w", "--tmpfs", hidden, "--unshare-pid", "--die-with-parent", "--"]);
+    });
+  } finally {
+    rmSync(hidden, { recursive: true, force: true });
+  }
+});

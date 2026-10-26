@@ -2,7 +2,7 @@
 // model CLI that reads a prompt on stdin and prints its answer on stdout, and turns the answer back
 // into the JSON reply generate.mjs expects. Which CLI and model is the operator's choice.
 //
-//   node decision-map/generate.mjs <run-dir> -- node decision-map/prompt-command.mjs [--keep <dir>] [--hide <dir>]... [--writable <dir>]... -- <cli> [args...]
+//   node decision-map/generate.mjs <run-dir> -- node decision-map/prompt-command.mjs [--keep <dir>] [--hide <dir>]... [--writable <dir>]... [--sandbox-env <NAME>] -- <cli> [args...]
 //   node decision-map/prompt-command.mjs --hide <dir>... [--writable <dir>]... --probe
 //
 // With --keep, every exchange is written to <dir>/<decision id>.json (request, raw answer, parsed
@@ -15,6 +15,12 @@
 // command fails rather than run the CLI unhidden. The CLI keeps network access to reach its model;
 // keeping the commands it runs itself off the network is its own sandbox's job (for Codex,
 // --sandbox read-only), which the operator names in the command line.
+//
+// With --sandbox-env NAME as well, the CLI itself runs outside the sandbox and gets the sandbox as a
+// JSON argv prefix in NAME instead, to start its model-facing process in it. That is for a CLI whose
+// own trusted start-up cannot run sandboxed, such as the Development Cycle's Codex bridge
+// (NAME=DEVELOPMENT_CYCLE_CODEX_APP_SERVER_PREFIX), which reads OpenClaw's login before starting
+// the Codex app-server that all of the model's file and command access goes through.
 //
 // --probe runs a shell in that same sandbox instead of a model and prints what it found: each hidden
 // directory empty, the root not writable, each writable directory writable. It exits nonzero if any
@@ -46,7 +52,7 @@ export const DEFAULT_MODEL_TIMEOUT_MS = modelDeadline(DEFAULT_TIMEOUT_MS);
 // The most the model may print; past it the model is stopped and the decision withheld.
 export const MAX_ANSWER_BYTES = 8 * 1024 * 1024;
 
-const USAGE = "Usage: node decision-map/prompt-command.mjs [--keep <dir>] [--hide <dir>]... [--writable <dir>]... [--timeout-seconds <n, capped below generate.mjs's deadline>] -- <cli> [args...]\n       node decision-map/prompt-command.mjs --hide <dir>... [--writable <dir>]... --probe";
+const USAGE = "Usage: node decision-map/prompt-command.mjs [--keep <dir>] [--hide <dir>]... [--writable <dir>]... [--sandbox-env <NAME>] [--timeout-seconds <n, capped below generate.mjs's deadline>] -- <cli> [args...]\n       node decision-map/prompt-command.mjs --hide <dir>... [--writable <dir>]... --probe";
 
 export function prompt(request) {
   const artifacts = request.artifacts.map((a) => [
@@ -127,10 +133,11 @@ function parseArgs(argv, env) {
     if (own[i] === "--keep" && i + 1 < own.length) args.keep = own[++i];
     else if (own[i] === "--hide" && i + 1 < own.length) args.hide.push(resolve(own[++i]));
     else if (own[i] === "--writable" && i + 1 < own.length) args.writable.push(resolve(own[++i]));
+    else if (own[i] === "--sandbox-env" && /^[A-Z_][A-Z0-9_]*$/.test(own[i + 1] || "")) args.sandboxEnv = own[++i];
     else if (own[i] === "--timeout-seconds" && Number(own[i + 1]) > 0) args.timeoutMs = Math.min(Number(own[++i]) * 1000, limit);
     else throw new Error(`Unknown argument: ${own[i]}. ${USAGE}`);
   }
-  if (args.writable.length && !args.hide.length) throw new Error(`--writable only applies with --hide. ${USAGE}`);
+  if ((args.writable.length || args.sandboxEnv) && !args.hide.length) throw new Error(`--writable and --sandbox-env only apply with --hide. ${USAGE}`);
   return args;
 }
 
@@ -165,6 +172,13 @@ for dir; do
 done
 exit $ok`;
 
+// The CLI as it is run with --sandbox-env: outside, with the sandbox's argv prefix in that variable.
+export function sandboxEnvCommand(args, bwrap = "bwrap") {
+  const sandbox = modelCommand(args, bwrap);
+  const prefix = [sandbox.file, ...sandbox.args.slice(0, sandbox.args.indexOf("--") + 1)];
+  return { file: args.cli, args: args.cliArgs, env: { [args.sandboxEnv]: JSON.stringify(prefix) } };
+}
+
 export function probeCommand({ hide, writable }) {
   return { cli: "sh", cliArgs: ["-c", PROBE, "probe", ...hide, "--", ...writable], hide, writable };
 }
@@ -177,9 +191,9 @@ function killGroup(pid, signal) {
   }
 }
 
-function run({ file, args }, input, timeoutMs, graceMs) {
+function run({ file, args, env }, input, timeoutMs, graceMs) {
   return new Promise((done) => {
-    const child = spawn(file, args, { stdio: ["pipe", "pipe", "pipe"], detached: true });
+    const child = spawn(file, args, { stdio: ["pipe", "pipe", "pipe"], detached: true, env: { ...process.env, ...env } });
     const decoder = new StringDecoder("utf8");
     let stdout = "";
     let bytes = 0;
@@ -233,7 +247,8 @@ if (isMain) {
     process.exit(result.status === 0 ? 0 : 1);
   }
   const request = JSON.parse(readFileSync(0, "utf8"));
-  const result = await run(modelCommand(args, bwrap), prompt(request), args.timeoutMs, args.graceMs);
+  const command = args.sandboxEnv ? sandboxEnvCommand(args, bwrap) : modelCommand(args, bwrap);
+  const result = await run(command, prompt(request), args.timeoutMs, args.graceMs);
   const answer = result.stdout;
   const reply = result.status === 0 ? parseAnswer(answer) : null;
   if (args.keep) {
@@ -245,7 +260,7 @@ if (isMain) {
     }, null, 2)}\n`);
   }
   if (result.error) {
-    process.stderr.write(`Could not start ${args.hide.length ? "bwrap, which --hide needs" : args.cli}: ${result.error.message}\n`);
+    process.stderr.write(`Could not start ${args.hide.length && !args.sandboxEnv ? "bwrap, which --hide needs" : args.cli}: ${result.error.message}\n`);
     process.exit(1);
   }
   if (result.status !== 0) {

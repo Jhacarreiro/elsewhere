@@ -21,6 +21,9 @@ if (mode === "slow") {
   const chunk = "x".repeat(1024 * 1024);
   const write = () => process.stdout.write(chunk, write);
   write();
+} else if (mode === "env") {
+  // Answers with the environment variable named next, with no alternatives.
+  process.stdout.write(JSON.stringify({ alternatives: [], value: process.env[process.argv[3]] ?? null }));
 } else if (mode === "peek") {
   // Answers whether the file named next is visible, with no alternatives.
   process.stdout.write(JSON.stringify({ alternatives: [], seen: existsSync(process.argv[3]) }));
