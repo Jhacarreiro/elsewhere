@@ -82,21 +82,21 @@ function readContained(root, rel, maxBytes) {
       if (n === 0) break;
       off += n;
     }
-    return { buf: buf.subarray(0, off), mtime: st.mtime.toISOString() };
+    return { buf: buf.subarray(0, off), mtime: st.mtime.toISOString(), ctime: st.ctime.toISOString() };
   } finally {
     closeSync(fd);
   }
 }
 
 // One reader per extraction: caches file contents and hashes. Call close() when done.
-// A caller that already pinned the run directory passes it as runRoot; the reader then reads from that
-// same descriptor and leaves closing it to the caller.
-export function createReader({ runDir, adapterDir = null, maxBytes = MAX_ARTIFACT_BYTES, runRoot = null }) {
+// A caller that already pinned the run (or adapter) directory passes it as runRoot (or adapterRoot); the
+// reader then reads from that same descriptor and leaves closing it to the caller.
+export function createReader({ runDir, adapterDir = null, maxBytes = MAX_ARTIFACT_BYTES, runRoot = null, adapterRoot = null }) {
   const roots = { run: runRoot || (runDir && pinRoot("--run", runDir)) };
   const owned = new Set(runRoot ? [] : ["run"]);
   try {
-    roots.adapter = adapterDir && pinRoot("--adapter", adapterDir);
-    owned.add("adapter");
+    roots.adapter = adapterRoot || (adapterDir && pinRoot("--adapter", adapterDir));
+    if (!adapterRoot) owned.add("adapter");
   } catch (e) {
     if (roots.run && owned.has("run")) closeSync(roots.run.fd);
     throw e;
@@ -109,7 +109,7 @@ export function createReader({ runDir, adapterDir = null, maxBytes = MAX_ARTIFAC
     if (!cache.has(key)) {
       try {
         const f = readContained(pinned, rel, maxBytes);
-        cache.set(key, f && { text: f.buf.toString("utf8"), sha: sha256(f.buf), mtime: f.mtime });
+        cache.set(key, f && { text: f.buf.toString("utf8"), sha: sha256(f.buf), mtime: f.mtime, ctime: f.ctime });
       } catch {
         cache.set(key, null);
       }
@@ -636,14 +636,14 @@ const instant = (r) => {
   return Number.isNaN(t) ? Infinity : t;
 };
 
-export function extract({ runDir, adapterDir = null, maxBytes, runRoot = null }) {
-  const reader = createReader({ runDir, adapterDir, maxBytes, runRoot });
+export function extract({ runDir, adapterDir = null, maxBytes, runRoot = null, adapterRoot = null }) {
+  const reader = createReader({ runDir, adapterDir, maxBytes, runRoot, adapterRoot });
   let records;
   try {
     const status = reader.json("run", "status.json");
     if (!status) throw new Error(`No readable status.json in ${runDir}`);
     const runId = String(status.runId || basename(runDir));
-    records = [...controlPlaneRecords(reader, status, runId), ...(adapterDir ? octopusRecords(reader, status, runId) : [])];
+    records = [...controlPlaneRecords(reader, status, runId), ...(adapterDir || adapterRoot ? octopusRecords(reader, status, runId) : [])];
   } finally {
     reader.close();
   }
