@@ -20,6 +20,16 @@
 // keeping the commands it runs itself off the network is its own sandbox's job (for Codex,
 // --sandbox read-only), which the operator names in the command line.
 //
+// With --allow-host <host> as well (repeatable, "*.domain" for a domain's subdomains), the sandbox gets
+// no network of its own (bwrap --unshare-net) and its one way out is an allowlist proxy this command
+// runs for as long as the CLI does (decision-map/net-allow.mjs): it admits HTTPS tunnels to the listed
+// hosts, the model providers, and refuses the rest, the run's repository host among them. The CLI
+// gets the proxy in HTTPS_PROXY and the usual variants. A CLI that ignores those variables reaches
+// nothing. Each tunnel asked for is logged in the kept exchange (and appended to --proxy-log), admitted
+// or not. The probe then also checks, from inside the sandbox, that a direct connection fails, that
+// each --deny-host (github.com by default) is refused and that each allowed host is admitted; the
+// canary has the model try to reach each --deny-host and fails if it can.
+//
 // With --sandbox-env NAME as well, the CLI itself runs outside the sandbox and gets the sandbox as a
 // JSON argv prefix in NAME instead, to start its model-facing process in it. That is for a CLI whose
 // own trusted start-up cannot run sandboxed, such as the Development Cycle's Codex bridge
@@ -47,10 +57,15 @@
 // running and nothing kept. The model runs in its own process group, and the whole group is stopped,
 // so a CLI that forks the real model leaves nothing running into the next decision.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { fileURLToPath } from "node:url";
 import { DEFAULT_TIMEOUT_MS } from "./generate.mjs";
+import { proxyEnv, SANDBOX_PROXY_PORT, startAllowProxy } from "./net-allow.mjs";
+
+const NET_ALLOW = fileURLToPath(new URL("./net-allow.mjs", import.meta.url));
 
 // The model's deadline inside the generator's: a tenth of it, at most 30 s, is left to stop the
 // model and write the kept exchange. Half of that is the grace between asking the model's process
@@ -89,7 +104,7 @@ export const SYSTEM_DIRS = [
 // The most the model may print; past it the model is stopped and the decision withheld.
 export const MAX_ANSWER_BYTES = 8 * 1024 * 1024;
 
-const USAGE = "Usage: node decision-map/prompt-command.mjs [--keep <dir>] [--hide <dir>]... [--readable <dir>]... [--writable <dir>]... [--sandbox-env <NAME>] [--env <NAME>]... [--canary] [--timeout-seconds <n, capped below generate.mjs's deadline>] -- <cli> [args...]\n       node decision-map/prompt-command.mjs --hide <dir>... [--readable <dir>]... [--writable <dir>]... --probe";
+const USAGE = "Usage: node decision-map/prompt-command.mjs [--keep <dir>] [--hide <dir>]... [--readable <dir>]... [--writable <dir>]... [--sandbox-env <NAME>] [--env <NAME>]... [--allow-host <host>]... [--deny-host <host>]... [--proxy-log <file>] [--canary] [--timeout-seconds <n, capped below generate.mjs's deadline>] -- <cli> [args...]\n       node decision-map/prompt-command.mjs --hide <dir>... [--readable <dir>]... [--writable <dir>]... [--allow-host <host>]... [--deny-host <host>]... --probe";
 
 export function prompt(request) {
   const artifacts = request.artifacts.map((a) => [
@@ -170,7 +185,7 @@ function parseArgs(argv, env) {
   // comes out of the model's time and not out of the margin.
   const startedAt = Number(env.DECISION_MAP_GENERATOR_DEADLINE) > 0 ? Number(env.DECISION_MAP_GENERATOR_DEADLINE) - generatorMs : Date.now();
   const limit = Math.max(0, modelDeadline(generatorMs) - (Date.now() - startedAt));
-  const args = { cli: argv[split + 1], cliArgs: argv.slice(split + 2), timeoutMs: limit, graceMs: killGrace(generatorMs), hide: [], readable: [], writable: [], env: [] };
+  const args = { cli: argv[split + 1], cliArgs: argv.slice(split + 2), timeoutMs: limit, graceMs: killGrace(generatorMs), hide: [], readable: [], writable: [], env: [], allow: [], deny: [] };
   for (let i = 0; i < own.length; i += 1) {
     if (own[i] === "--keep" && i + 1 < own.length) args.keep = own[++i];
     else if (own[i] === "--hide" && i + 1 < own.length) args.hide.push(resolve(own[++i]));
@@ -178,18 +193,30 @@ function parseArgs(argv, env) {
     else if (own[i] === "--writable" && i + 1 < own.length) args.writable.push(resolve(own[++i]));
     else if (own[i] === "--sandbox-env" && /^[A-Z_][A-Z0-9_]*$/.test(own[i + 1] || "")) args.sandboxEnv = own[++i];
     else if (own[i] === "--env" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(own[i + 1] || "")) args.env.push(own[++i]);
+    else if (own[i] === "--allow-host" && /^(\*\.)?[A-Za-z0-9.-]+$/.test(own[i + 1] || "")) args.allow.push(own[++i]);
+    else if (own[i] === "--deny-host" && /^[A-Za-z0-9.-]+$/.test(own[i + 1] || "")) args.deny.push(own[++i]);
+    else if (own[i] === "--proxy-log" && i + 1 < own.length) args.proxyLog = resolve(own[++i]);
     else if (own[i] === "--canary") args.canary = true;
     else if (own[i] === "--timeout-seconds" && Number(own[i + 1]) > 0) args.timeoutMs = Math.min(Number(own[++i]) * 1000, limit);
     else throw new Error(`Unknown argument: ${own[i]}. ${USAGE}`);
   }
-  if ((args.readable.length || args.writable.length || args.sandboxEnv || args.canary) && !args.hide.length) throw new Error(`--readable, --writable, --sandbox-env and --canary only apply with --hide. ${USAGE}`);
+  if ((args.readable.length || args.writable.length || args.sandboxEnv || args.canary || args.allow.length) && !args.hide.length) throw new Error(`--readable, --writable, --sandbox-env, --allow-host and --canary only apply with --hide. ${USAGE}`);
+  if ((args.deny.length || args.proxyLog) && !args.allow.length) throw new Error(`--deny-host and --proxy-log only apply with --allow-host. ${USAGE}`);
+  if (args.allow.length && !args.deny.length) args.deny.push("github.com");
   return args;
 }
 
-// The CLI as it is run: in the bwrap sandbox when anything is hidden.
-export function modelCommand({ cli, cliArgs, hide, readable = [], writable = [] }, bwrap = "bwrap", system = SYSTEM_DIRS.filter((dir) => existsSync(dir))) {
+// The CLI as it is run: in the bwrap sandbox when anything is hidden. With network, the sandbox has
+// no network of its own and the CLI runs behind the forwarder to the proxy's socket; the forwarder and
+// the node that runs it are shown read-only wherever they are.
+export function modelCommand({ cli, cliArgs, hide, readable = [], writable = [], network }, bwrap = "bwrap", system = SYSTEM_DIRS.filter((dir) => existsSync(dir)), node = process.execPath) {
   if (!hide.length) return { file: cli, args: cliArgs };
   const home = writable[0] || "/tmp";
+  const net = network ? {
+    mounts: [dirname(network.socket), node, NET_ALLOW].flatMap((path) => ["--ro-bind", path, path]),
+    env: Object.entries(proxyEnv(SANDBOX_PROXY_PORT)).flatMap(([name, value]) => ["--setenv", name, value]),
+    wrap: [node, NET_ALLOW, "--forward", network.socket, "--port", String(SANDBOX_PROXY_PORT), "--"],
+  } : { mounts: [], env: [], wrap: [] };
   return {
     file: bwrap,
     args: [
@@ -205,11 +232,14 @@ export function modelCommand({ cli, cliArgs, hide, readable = [], writable = [] 
         ...writable.map((dir) => ["--bind", dir, dir]),
         ...hide.map((dir) => ["--tmpfs", dir]),
       ].sort((a, b) => depth(a.at(-1)) - depth(b.at(-1))).flat(),
+      ...net.mounts,
       "--remount-ro", "/",
       "--setenv", "HOME", home,
+      ...net.env,
       "--chdir", home,
       "--unshare-pid", "--die-with-parent",
-      "--", cli, ...cliArgs,
+      ...(network ? ["--unshare-net"] : []),
+      "--", ...net.wrap, cli, ...cliArgs,
     ],
   };
 }
@@ -237,25 +267,35 @@ done
 exit $ok`;
 
 // The CLI as it is run with --sandbox-env: outside, with the sandbox's argv prefix in that variable.
+// Everything before the CLI: bwrap's arguments and, with network, the forwarder that runs it.
 export function sandboxPrefix(args, bwrap = "bwrap") {
   const sandbox = modelCommand(args, bwrap);
-  return [sandbox.file, ...sandbox.args.slice(0, sandbox.args.indexOf("--") + 1)];
+  return [sandbox.file, ...sandbox.args.slice(0, sandbox.args.length - 1 - args.cliArgs.length)];
 }
 
 export function sandboxEnvCommand(args, bwrap = "bwrap") {
   return { file: args.cli, args: args.cliArgs, env: { [args.sandboxEnv]: JSON.stringify(sandboxPrefix(args, bwrap)) } };
 }
 
-export function probeCommand({ hide, readable, writable }) {
+export function probeCommand({ hide, readable, writable, network }) {
   const mounts = { readable, writable, hide };
-  return { cli: "sh", cliArgs: ["-c", PROBE, "probe", ...hide.flatMap((dir) => [dir, mountedInside(dir, mounts).join("\n")]), "--", ...writable], hide, readable, writable };
+  return { cli: "sh", cliArgs: ["-c", PROBE, "probe", ...hide.flatMap((dir) => [dir, mountedInside(dir, mounts).join("\n")]), "--", ...writable], hide, readable, writable, network };
+}
+
+// The network half of the probe, run in the same sandbox behind the same forwarder.
+export function networkProbeCommand({ hide, readable, writable, network, allow, deny }, node = process.execPath) {
+  return { cli: node, cliArgs: [NET_ALLOW, "--check", "--port", String(SANDBOX_PROXY_PORT), ...allow.flatMap((h) => ["--allow-host", h]), ...deny.flatMap((h) => ["--deny-host", h])], hide, readable, writable, network };
 }
 
 // One shell command whose output names what it found line by line, so the model only has to copy
 // it: "HOME <dir>", then "ENTRY <dir> <name>" or "ABSENT <dir>" for each hidden directory, then "END".
-export function canaryScript({ hide }) {
-  const quoted = hide.map((dir) => `'${dir.replaceAll("'", "'\\''")}'`).join(" ");
-  return `printf 'HOME %s\\n' "$HOME"; for d in ${quoted}; do if [ -d "$d" ]; then ls -A "$d" | while IFS= read -r e; do printf 'ENTRY %s %s\\n' "$d" "$e"; done; else printf 'ABSENT %s\\n' "$d"; fi; done; echo END`;
+// With network, also "NET <host> OPEN" or "NET <host> BLOCKED" for each denied host, or "NET <host>
+// NO_NODE" when there is no node to try with.
+export function canaryScript({ hide, allow = [], deny = [] }) {
+  const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
+  const quoted = hide.map(quote).join(" ");
+  const net = allow.length ? ` for h in ${deny.map(quote).join(" ")}; do if ! command -v node >/dev/null; then printf 'NET %s NO_NODE\\n' "$h"; elif node -e 'fetch("https://" + process.argv[1] + "/", { signal: AbortSignal.timeout(10000) }).then(() => process.exit(0), () => process.exit(1))' "$h" 2>/dev/null; then printf 'NET %s OPEN\\n' "$h"; else printf 'NET %s BLOCKED\\n' "$h"; fi; done;` : "";
+  return `printf 'HOME %s\\n' "$HOME"; for d in ${quoted}; do if [ -d "$d" ]; then ls -A "$d" | while IFS= read -r e; do printf 'ENTRY %s %s\\n' "$d" "$e"; done; else printf 'ABSENT %s\\n' "$d"; fi; done;${net} echo END`;
 }
 
 export function canaryPrompt(args) {
@@ -271,7 +311,7 @@ export function canaryPrompt(args) {
 }
 
 // What a canary answer shows wrong; empty when it passes.
-export function canaryFailures(reply, { hide, readable = [], writable = [] }) {
+export function canaryFailures(reply, { hide, readable = [], writable = [], allow = [], deny = [] }) {
   const lines = typeof reply?.output === "string" ? reply.output.split("\n").map((line) => line.trimEnd()) : [];
   if (!lines.includes("END")) return ["no_output"];
   const failures = [];
@@ -282,6 +322,13 @@ export function canaryFailures(reply, { hide, readable = [], writable = [] }) {
     const allowed = mountedInside(dir, { readable, writable, hide });
     const entries = lines.filter((line) => line.startsWith(`ENTRY ${dir} `)).map((line) => line.slice(`ENTRY ${dir} `.length));
     if (entries.some((name) => !allowed.includes(name))) failures.push(`hidden_not_empty ${dir}`);
+  }
+  if (allow.length) {
+    for (const host of deny) {
+      const seen = lines.filter((line) => line.startsWith(`NET ${host} `)).map((line) => line.slice(`NET ${host} `.length));
+      if (seen.includes("OPEN")) failures.push(`network_open ${host}`);
+      else if (seen.length !== 1 || seen[0] !== "BLOCKED") failures.push(`no_network_check ${host}`);
+    }
   }
   return failures;
 }
@@ -340,6 +387,24 @@ if (isMain) {
     process.exit(2);
   }
   const bwrap = process.env.DECISION_MAP_BWRAP || "bwrap";
+  // The allowlist proxy, for as long as this command runs, on a socket in a directory only this user
+  // can open; the sandbox sees that directory read-only.
+  const tunnels = [];
+  if (args.allow.length) {
+    const dir = mkdtempSync(join(tmpdir(), "net-allow-"));
+    process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+    args.network = { socket: join(dir, "proxy.sock") };
+    const server = await startAllowProxy({
+      socket: args.network.socket,
+      allow: args.allow,
+      onTunnel: (entry) => {
+        tunnels.push(entry);
+        if (args.proxyLog) appendFileSync(args.proxyLog, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+      },
+    });
+    server.unref();
+  }
+  const network = args.network ? { allow: args.allow, deny: args.deny, tunnels } : null;
   if (args.cli === "sh" && process.argv.at(-1) === "--probe") {
     if (!args.hide.length) {
       process.stderr.write(`--probe needs --hide. ${USAGE}\n`);
@@ -347,12 +412,20 @@ if (isMain) {
     }
     const sandbox = modelCommand(probeCommand(args), bwrap);
     const result = await run({ ...sandbox, env: modelEnv([], process.env) }, "", args.timeoutMs, args.graceMs);
-    process.stdout.write(`${JSON.stringify({ sandbox: [sandbox.file, ...sandbox.args.slice(0, sandbox.args.indexOf("--"))], exit: result.status ?? result.signal ?? String(result.error?.code || result.error), found: result.stdout.trim().split("\n").filter(Boolean) }, null, 2)}\n`);
-    process.exit(result.status === 0 ? 0 : 1);
+    const found = result.stdout.trim().split("\n").filter(Boolean);
+    let exit = result.status ?? result.signal ?? String(result.error?.code || result.error);
+    if (args.network) {
+      const check = await run({ ...modelCommand(networkProbeCommand(args), bwrap), env: modelEnv([], process.env) }, "", args.timeoutMs, args.graceMs);
+      found.push(...check.stdout.trim().split("\n").filter(Boolean));
+      if (exit === 0) exit = check.status ?? check.signal ?? String(check.error?.code || check.error);
+    }
+    process.stdout.write(`${JSON.stringify({ sandbox: [sandbox.file, ...sandbox.args.slice(0, sandbox.args.indexOf("--"))], exit, found, ...(network ? { network } : {}) }, null, 2)}\n`);
+    process.exit(exit === 0 ? 0 : 1);
   }
   const command = args.sandboxEnv ? sandboxEnvCommand(args, bwrap) : modelCommand(args, bwrap);
   const env = { ...modelEnv(args.env, process.env), ...command.env };
-  const provenance = { command: [args.cli, ...args.cliArgs], sandbox: sandboxPrefix(args, bwrap), env: Object.keys(env).sort() };
+  // network.tunnels fills in as the CLI runs, so it is read when the exchange is kept.
+  const provenance = { command: [args.cli, ...args.cliArgs], sandbox: sandboxPrefix(args, bwrap), env: Object.keys(env).sort(), ...(network ? { network } : {}) };
   if (args.canary) {
     const result = await run({ ...command, env }, canaryPrompt(args), args.timeoutMs, args.graceMs);
     const reply = result.status === 0 ? parseAnswer(result.stdout) : null;
