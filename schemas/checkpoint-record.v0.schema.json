@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Jhacarreiro/elsewhere/schemas/checkpoint-record.v0.schema.json",
+  "title": "Checkpoint record v0",
+  "description": "Phase 3: everything the stage that made one decision consumed, with proof of the version that existed when the stage started, what changed since the run, and what a replay must not see.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "decision_id", "run", "stage", "at", "inputs", "known_differences", "excluded", "adequacy", "producer"],
+  "properties": {
+    "schema_version": { "const": 0 },
+    "id": { "type": "string", "pattern": "^chk_[0-9a-f]{16}$" },
+    "decision_id": { "type": "string", "pattern": "^dec_[0-9a-f]{16}$", "description": "The decision record this checkpoint precedes." },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id"],
+      "properties": { "run_id": { "type": "string" }, "round": { "type": "integer", "minimum": 0 } }
+    },
+    "stage": { "type": "string", "description": "The stage whose inputs are captured, as in the decision record." },
+    "at": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "source"],
+      "description": "When the stage started consuming its inputs. Every input must be proven to be the version that existed before this time.",
+      "properties": {
+        "value": { "type": ["string", "null"], "format": "date-time" },
+        "source": { "enum": ["artifact_field", "artifact_header", "file_mtime", "commit_time", "unknown"] }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/input" }
+    },
+    "known_differences": {
+      "type": "array",
+      "description": "What differs between the run and the replay environment (tool, model, routing, cap). Empty means checked and none found.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["subject", "recorded", "replay"],
+        "properties": {
+          "subject": { "type": "string" },
+          "recorded": { "type": ["string", "null"], "description": "As recorded by the run; null when the run did not record it." },
+          "replay": { "type": ["string", "null"] },
+          "note": { "type": "string", "maxLength": 300 }
+        }
+      }
+    },
+    "excluded": {
+      "type": "array",
+      "description": "Artifacts the replay must not see, such as anything written after the checkpoint time.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["root", "pointer", "reason"],
+        "properties": {
+          "root": { "enum": ["run", "adapter", "repository"] },
+          "pointer": { "type": "string", "minLength": 1 },
+          "reason": { "enum": ["written_after_checkpoint", "outcome_of_decision", "unverifiable_version"] }
+        }
+      }
+    },
+    "adequacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "failed"],
+      "description": "Computed by decision-map/checkpoint.mjs; a stated value is never trusted.",
+      "properties": {
+        "status": { "enum": ["adequate", "inadequate"] },
+        "failed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["role", "pointer", "reason"],
+            "properties": {
+              "role": { "type": ["string", "null"] },
+              "pointer": { "type": ["string", "null"] },
+              "reason": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": { "name": { "type": "string" }, "version": { "type": "string" } }
+    }
+  },
+  "$defs": {
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "root", "pointer", "version_proof", "complete"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "description": "What the stage used it for, for example repository_commit, working_tree_change, stage_context, plan, request, configuration."
+        },
+        "root": { "enum": ["run", "adapter", "repository"] },
+        "pointer": { "type": "string", "minLength": 1, "description": "Path relative to the root; for a commit, its id." },
+        "commit": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$", "description": "Full commit id; required for repository_commit." },
+        "recorded_in": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["root", "pointer", "sha256", "written_at"],
+          "description": "For repository_commit: the run or adapter artifact, written before the checkpoint, that names this commit as the one the stage started from.",
+          "properties": {
+            "root": { "enum": ["run", "adapter"] },
+            "pointer": { "type": "string", "minLength": 1 },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "written_at": { "type": "string", "format": "date-time" }
+          }
+        },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Content hash; required for every role except repository_commit." },
+        "version_proof": { "enum": ["immutable_copy", "pre_decision_hash", "pre_decision_time"] },
+        "written_at": { "type": "string", "format": "date-time", "description": "Last write and change time; required with pre_decision_time." },
+        "complete": { "type": "boolean", "description": "Whether the input is shown to be all the stage saw, not a truncated or partial copy." },
+        "incomplete_reason": { "type": "string", "maxLength": 300 }
+      }
+    }
+  }
+}
