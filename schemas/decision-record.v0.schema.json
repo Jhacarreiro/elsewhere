@@ -95,6 +95,7 @@
         }
       }
     },
+    "generated_alternatives": { "$ref": "#/$defs/generated_alternatives" },
     "rationale": {
       "oneOf": [{ "$ref": "#/$defs/claim" }, { "type": "null" }],
       "description": "null when no rationale was recorded. Never reconstructed from hidden reasoning."
@@ -162,11 +163,120 @@
       "if": { "properties": { "alternatives": { "properties": { "status": { "const": "listed" } } } } },
       "then": { "properties": { "alternatives": { "properties": { "items": { "minItems": 1 } } } } },
       "else": { "properties": { "alternatives": { "properties": { "items": { "maxItems": 0 } } } } }
+    },
+    {
+      "if": { "required": ["generated_alternatives"], "properties": { "generated_alternatives": { "properties": { "status": { "const": "withheld" } } } } },
+      "then": { "properties": { "generated_alternatives": { "required": ["reason"], "properties": { "items": { "maxItems": 0 } } } } }
     }
   ],
   "$defs": {
     "classification": { "enum": ["observed", "agent-stated", "post-hoc-inferred"] },
     "level": { "enum": ["low", "medium", "high", "unknown"] },
+    "version_proof": {
+      "enum": ["immutable_copy", "pre_decision_hash", "pre_decision_time"],
+      "description": "How the artifact's version at decision time was established: a copy taken before the decision and never changed, a content hash recorded before the decision that still matches, or a write time before the decision with no later write."
+    },
+    "generated_alternatives": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "boundary", "generator", "items"],
+      "description": "Phase 2: alternatives proposed after the run by a generator, from pre-decision evidence only. Kept apart from alternatives, which reports only what the run's own artifacts say.",
+      "properties": {
+        "status": {
+          "enum": ["generated", "withheld"],
+          "description": "generated: the generator ran on verified pre-decision evidence; zero items is a valid result. withheld: nothing was generated, and reason says why."
+        },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "boundary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "source"],
+          "description": "The decision time used as the evidence cutoff.",
+          "properties": {
+            "value": { "type": ["string", "null"], "format": "date-time" },
+            "source": { "enum": ["artifact_field", "artifact_header", "file_mtime", "commit_time", "unknown"] }
+          }
+        },
+        "generator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "version", "generated_at"],
+          "properties": {
+            "name": { "type": "string" },
+            "version": { "type": "string" },
+            "command": { "type": "string", "description": "Label of the configured command; never a secret or a host path." },
+            "generated_at": { "type": "string", "format": "date-time" }
+          }
+        },
+        "items": { "type": "array", "items": { "$ref": "#/$defs/generated_alternative" } }
+      }
+    },
+    "generated_alternative": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "assumptions", "potential_consequences", "uncertainty", "classification", "executed"],
+      "properties": {
+        "option_id": { "type": "string" },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "assumptions": {
+          "type": "array",
+          "minItems": 1,
+          "contains": { "type": "object", "required": ["basis"], "properties": { "basis": { "const": "grounded" } } },
+          "description": "At least one assumption is grounded in pre-decision evidence.",
+          "items": { "$ref": "#/$defs/assumption" }
+        },
+        "potential_consequences": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 300 },
+          "description": "Always hypothesized, never observed outcomes."
+        },
+        "uncertainty": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["level"],
+          "properties": {
+            "level": { "enum": ["low", "medium", "high", "unknown"] },
+            "note": { "type": "string", "maxLength": 300 }
+          }
+        },
+        "classification": { "const": "generated" },
+        "executed": { "const": "no" }
+      }
+    },
+    "assumption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "basis", "evidence"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "basis": {
+          "enum": ["grounded", "unsupported"],
+          "description": "grounded: backed by pre-decision evidence. unsupported: stated without evidence and shown as such."
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["root", "pointer", "sha256", "version_proof"],
+            "properties": {
+              "root": { "enum": ["run", "adapter", "repository"] },
+              "pointer": { "type": "string" },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Hash of the version that existed at decision time." },
+              "version_proof": { "$ref": "#/$defs/version_proof" },
+              "excerpt": { "type": "string", "maxLength": 300 }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "basis": { "const": "grounded" } } },
+          "then": { "properties": { "evidence": { "minItems": 1 } } },
+          "else": { "properties": { "evidence": { "maxItems": 0 } } }
+        }
+      ]
+    },
     "claim": {
       "type": "object",
       "additionalProperties": false,
