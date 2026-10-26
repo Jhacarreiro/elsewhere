@@ -69,6 +69,11 @@ test("the answer parser takes the alternatives object out of surrounding text", 
   assert.equal(parseAnswer('{"other": 1}'), null);
   assert.equal(parseAnswer("no json"), null);
   assert.deepEqual(parseAnswer('preface {not JSON}; answer {"alternatives": [{"summary": "a } in a string"}]} end'), { alternatives: [{ summary: "a } in a string" }] });
+  // Unbalanced braces make every start rescan the rest; the budget stops that well before a full
+  // quadratic scan of an 8 MiB answer.
+  const started = Date.now();
+  assert.equal(parseAnswer("{".repeat(2 * 1024 * 1024)), null);
+  assert.ok(Date.now() - started < 2000);
 });
 
 test("a model past its deadline is stopped and its exchange kept, inside the generator's own deadline", () => {

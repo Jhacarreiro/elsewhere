@@ -84,12 +84,15 @@ export function prompt(request) {
 }
 
 // The first JSON object with an alternatives list in the answer, allowing a fenced block or prose
-// around it, braces in the prose included.
+// around it, braces in the prose included. Trying every opening brace can rescan the text many
+// times, so the scanning is budgeted: a few passes over the text, then the answer counts as unparsed.
 export function parseAnswer(text) {
   const fenced = text.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
+  const budget = { left: 4 * text.length + 4096 };
   for (const candidate of fenced ? [fenced[1], text] : [text]) {
     for (let start = candidate.indexOf("{"); start >= 0; start = candidate.indexOf("{", start + 1)) {
-      const end = closingBrace(candidate, start);
+      const end = closingBrace(candidate, start, budget);
+      if (end === null) return null;
       if (end < 0) continue;
       try {
         const value = JSON.parse(candidate.slice(start, end + 1));
@@ -102,11 +105,13 @@ export function parseAnswer(text) {
   return null;
 }
 
-// The index of the brace that closes the one at start, skipping braces inside JSON strings, or -1.
-function closingBrace(text, start) {
+// The index of the brace that closes the one at start, skipping braces inside JSON strings, -1 if
+// none does, or null once the budget is spent.
+function closingBrace(text, start, budget) {
   let depth = 0;
   let inString = false;
   for (let i = start; i < text.length; i += 1) {
+    if (--budget.left < 0) return null;
     const c = text[i];
     if (inString) {
       if (c === "\\") i += 1;
