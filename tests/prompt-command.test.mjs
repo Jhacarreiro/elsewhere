@@ -262,9 +262,11 @@ test("with real bwrap a readable directory inside a hidden one stays readable an
     writeFileSync(join(hidden, "auth.json"), "{}\n");
     mkdirSync(join(hidden, "npm"));
     writeFileSync(join(hidden, "npm", "cli.js"), "\n");
-    const { status, report } = probe(["--hide", hidden, "--readable", join(hidden, "npm")]);
+    mkdirSync(join(hidden, "run"));
+    writeFileSync(join(hidden, "run", "outcome.md"), "\n");
+    const { status, report } = probe(["--hide", hidden, "--readable", join(hidden, "npm"), "--hide", join(hidden, "run")]);
     assert.equal(status, 0, JSON.stringify(report));
-    assert.deepEqual(report.found, [`hidden_empty ${hidden}`, "root_read_only"]);
+    assert.deepEqual(report.found, [`hidden_empty ${hidden}`, `hidden_empty ${join(hidden, "run")}`, "root_read_only"]);
   } finally {
     rmSync(hidden, { recursive: true, force: true });
   }
@@ -311,6 +313,7 @@ test("--canary passes through the full command when the model's HOME is the writ
 
 test("a hidden directory may show only the mount points of directories named inside it", () => {
   assert.deepEqual(mountedInside("/s", { readable: ["/s/npm/lib", "/s2/x", "/t"], writable: ["/s/scratch"] }), ["npm", "scratch"]);
+  assert.deepEqual(mountedInside("/run", { hide: ["/run", "/run/decision-map/x"] }), ["decision-map"]);
   const args = { hide: ["/s", "/r"], readable: ["/s/npm"], writable: ["/w"] };
   assert.deepEqual(canaryFailures({ output: "HOME /w\nENTRY /s npm\nABSENT /r\nEND\n" }, args), []);
   assert.deepEqual(canaryFailures({ output: "HOME /w\nENTRY /s npm\nENTRY /s auth.json\nENTRY /r x\nEND" }, args), ["hidden_not_empty /s", "hidden_not_empty /r"]);

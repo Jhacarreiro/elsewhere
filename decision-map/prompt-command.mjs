@@ -207,10 +207,11 @@ export function modelCommand({ cli, cliArgs, hide, readable = [], writable = [] 
   };
 }
 
-// What may show inside a hidden directory: the mount points of readable or writable directories
-// named inside it (the CLI's install inside its state directory, say), by their first name below it.
-export function mountedInside(dir, { readable = [], writable = [] }) {
-  return [...new Set([...readable, ...writable].filter((d) => d.startsWith(`${dir}/`)).map((d) => d.slice(dir.length + 1).split("/")[0]))];
+// What may show inside a hidden directory: the mount points of readable, writable or other hidden
+// directories named inside it (the CLI's install inside its state directory, say), by their first
+// name below it.
+export function mountedInside(dir, { readable = [], writable = [], hide = [] }) {
+  return [...new Set([...readable, ...writable, ...hide].filter((d) => d.startsWith(`${dir}/`)).map((d) => d.slice(dir.length + 1).split("/")[0]))];
 }
 
 // Run in the sandbox by --probe, with each hidden directory and the names that may show in it (one per
@@ -239,7 +240,7 @@ export function sandboxEnvCommand(args, bwrap = "bwrap") {
 }
 
 export function probeCommand({ hide, readable, writable }) {
-  const mounts = { readable, writable };
+  const mounts = { readable, writable, hide };
   return { cli: "sh", cliArgs: ["-c", PROBE, "probe", ...hide.flatMap((dir) => [dir, mountedInside(dir, mounts).join("\n")]), "--", ...writable], hide, readable, writable };
 }
 
@@ -271,7 +272,7 @@ export function canaryFailures(reply, { hide, readable = [], writable = [] }) {
   const homes = lines.filter((line) => line.startsWith("HOME ")).map((line) => line.slice(5));
   if (homes.length !== 1 || homes[0] !== home) failures.push(`home ${JSON.stringify(homes.join(" ") || null)}`);
   for (const dir of hide) {
-    const allowed = mountedInside(dir, { readable, writable });
+    const allowed = mountedInside(dir, { readable, writable, hide });
     const entries = lines.filter((line) => line.startsWith(`ENTRY ${dir} `)).map((line) => line.slice(`ENTRY ${dir} `.length));
     if (entries.some((name) => !allowed.includes(name))) failures.push(`hidden_not_empty ${dir}`);
   }
