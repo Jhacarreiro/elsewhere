@@ -1,6 +1,6 @@
 # Decision Multiverse — research roadmap
 
-**Status:** Phase 1 is complete: steps 1 and 2 are documented, steps 3 to 5 have a working prototype ([decision map](DECISION_MAP.md)) demonstrated on one real run in step 6, and the map can be written at the end of each Development Cycle run when the operator configures it as the run-end command, as on the owner's machine. Phase 2 steps 1 to 4 are done, with one evaluation on one run. Phases 3 and 4 are not started, and no research results are established. **Home:** Elsewhere research documentation, not a claim about the existing Development Cycle product.
+**Status:** Phase 1 is complete: steps 1 and 2 are documented, steps 3 to 5 have a working prototype ([decision map](DECISION_MAP.md)) demonstrated on one real run in step 6, and the map can be written at the end of each Development Cycle run when the operator configures it as the run-end command, as on the owner's machine. Phase 2 steps 1 to 4 are done, with one evaluation on one run. Phase 3 is planned and not started, Phase 4 is not started, and no research results are established. **Home:** Elsewhere research documentation, not a claim about the existing Development Cycle product.
 
 ## Vision
 
@@ -45,7 +45,7 @@ These runs are also the first evaluation data for Phase 1. Runs from unrelated p
 - Generated public examples are portable and pass the repository's public-sanitization audit.
 - No tautological checks, change-detector tests or regression tests without a genuine behavior gap.
 
-## Phase 2 — contextual alternatives (in progress)
+## Phase 2 — contextual alternatives (done)
 
 Goal: for a consequential decision, describe what else could reasonably have been done, grounded in what the run actually knew at that point. Each alternative is a short, non-prescriptive description, with its assumptions, uncertainty and potential consequences. Nothing in this phase executes an alternative.
 
@@ -56,9 +56,20 @@ Goal: for a consequential decision, describe what else could reasonably have bee
 
 **Out of scope for Phase 2:** executing or replaying alternatives, predicting outcomes as facts, fixed option types or branch counts, ranking alternatives as better or worse than the chosen option.
 
-## Future experimental phases (not implemented)
+## Phase 3 — isolated replay (planned)
 
-**Phase 3 — isolated replay:** capture or reconstruct an *adequate* pre-decision checkpoint, branch in isolated worktrees/environments, hold evaluation criteria fixed, prevent future-information leakage, and compare actual outputs.
+Goal: go back to the moment before one consequential decision, take a different path from there in isolation, and compare what actually comes out against what the run did. Phase 2 can only say an alternative looks worth considering; Phase 3 executes one and measures the outcome. Replays never touch the original run, its repository or its delivery.
+
+A *checkpoint* is everything the stage that made the decision consumed: the repository commit, the working-tree change it saw, the context and plan it was given, the stage's configuration (routing, models, caps) and the time. It is *adequate* only when each part can be shown to be the version that existed at decision time, by the same rule as Phase 2 step 2 (immutable copy, recorded hash, or a timestamp earlier than the decision with no later write), and when everything that changed since (tool versions, model versions, provider routing) is recorded as a known difference. An inadequate checkpoint is reported, never patched by hand.
+
+1. Define a checkpoint record, additive to the decision record: per input, its role, a pointer, a content hash and its pre-decision proof; the stage configuration as recorded then and as it is at replay time, with each difference listed; and the information the replay must not see (artifacts written after the decision). A decision with any input that cannot be proven pre-decision has no adequate checkpoint, and the record says which input failed.
+2. Build a read-only checkpoint builder that reconstructs a checkpoint from a finished run's artifacts, writes it as a private bundle (copies plus hashes), and refuses when the record from step 1 is not adequate. It never writes into the run, the adapter state or the delivered repository.
+3. Build a replay harness that materializes a checkpoint in a fresh worktree and a fresh adapter state directory, runs the stage through a pluggable command in the [sandbox adapter](../decision-map/prompt-command.mjs) with the run, the adapter's original state, the delivered code and anything after the decision hidden, and records the outcome the stage would have recorded (its decision, findings, validation results), with duration and cost. A branch is the checkpoint plus one explicit, recorded change, such as a human answer given at that point; the control branch has no change. A probe and a canary, as in Phase 2, prove the isolation before any model run.
+4. Evaluate on the baseline run with a protocol fixed before any replay output is looked at. The target is the decision Phase 2 found most consequential: which findings stand after review round 0, where the generated alternative was to put the operator-authentication question to the owner before correcting. Control branches replay the checkpoint unchanged and measure replay fidelity: how far the outcome matches the original run's, run to run. The alternative branch adds the owner's answer to that question at round 0 and runs the same correction loop under the same cap. Compare convergence within the cap, findings left standing, mechanical validation, duration and cost. The owner's answer was given after the run, so it enters only as the branch's one recorded change, never as hidden context, and the results say so. Report null results, including "the control does not reproduce the original outcome", which makes the branch comparison uninformative.
+
+**Out of scope for Phase 3:** replaying more than one decision before the first evaluation, any branch that writes to the original run, repository or delivery, ranking branches without a criterion fixed in advance, presenting one replay as a measured property of the alternative rather than one sample, and adaptive selection of forks (Phase 4).
+
+## Future experimental phase (not implemented)
 
 **Phase 4 — adaptive search:** decide which forks deserve finite compute; compare to linear execution and to spending the same budget on one longer run. Study feasibility and diminishing returns before broad parallel search.
 
