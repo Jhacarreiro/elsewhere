@@ -6,7 +6,10 @@ import { assessCheckpoint } from "../decision-map/checkpoint.mjs";
 const HASH = "b".repeat(64);
 const COMMIT = "c".repeat(40);
 
-const commit = { role: "repository_commit", root: "repository", pointer: "HEAD", commit: COMMIT, version_proof: "immutable_copy", complete: true };
+const commit = {
+  role: "repository_commit", root: "repository", pointer: COMMIT, commit: COMMIT, version_proof: "immutable_copy", complete: true,
+  recorded_in: { root: "run", pointer: "start.json", sha256: HASH, written_at: "2026-01-15T16:39:00Z" },
+};
 const change = (over = {}) => ({
   role: "working_tree_change", root: "adapter", pointer: "results/review-input.diff", sha256: HASH,
   version_proof: "pre_decision_time", written_at: "2026-01-15T16:39:58Z", complete: true, ...over,
@@ -86,4 +89,11 @@ test("the documented example is the shape the schema describes", async () => {
   for (const field of schema.required) assert.ok(field in example, `example lacks ${field}`);
   for (const field of Object.keys(example)) assert.ok(field in schema.properties, `schema lacks ${field}`);
   assert.equal(assessCheckpoint(example).adequacy.status, example.adequacy.status);
+});
+
+test("a commit not recorded before the checkpoint could be later code than the stage saw", () => {
+  const { recorded_in, ...unrecorded } = commit;
+  assert.deepEqual(reasons(checkpoint({ inputs: [unrecorded, change()] })), ["not shown to be the commit the stage started from"]);
+  const late = { ...commit, recorded_in: { ...commit.recorded_in, written_at: "2026-01-15T16:41:00Z" } };
+  assert.deepEqual(reasons(checkpoint({ inputs: [late, change()] })), ["commit recorded only at or after the checkpoint time"]);
 });

@@ -23,17 +23,19 @@ async function fixture() {
   writeFileSync(join(repo, "b.txt"), "alpha\n");
   gitIn(repo, "add", ".");
   gitIn(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "base");
+  const base = gitIn(repo, "rev-parse", "HEAD");
   writeFileSync(join(repo, "a.txt"), "one\n2\nthree\nfour\n");
   writeFileSync(join(repo, "b.txt"), "alpha\nbeta\n");
   const diff = gitIn(repo, "diff") + "\n";
   gitIn(repo, "checkout", "-q", "--", ".");
   writeFileSync(join(adapter, "results", "review-input.diff"), diff);
   writeFileSync(join(run, "plan.md"), "# Plan\n");
+  writeFileSync(join(run, "start.json"), `${JSON.stringify({ sourceCommit: base })}\n`);
   await pause(30);
   const at = new Date().toISOString();
   await pause(30);
   writeFileSync(join(adapter, "results", "review-findings-round-1.json"), "{}\n");
-  return { top, repo, run, adapter, diff, at };
+  return { top, repo, run, adapter, diff, at, base };
 }
 
 const spec = (f, over = {}) => ({
@@ -42,8 +44,8 @@ const spec = (f, over = {}) => ({
   stage: "review",
   at: { value: f.at, source: "artifact_field" },
   inputs: [
-    { role: "repository_commit", ref: "HEAD" },
-    { role: "working_tree_change", root: "adapter", path: "results/review-input.diff", diff_base: "HEAD", expect_stat: [{ path: "a.txt", changes: 3 }, { path: "b.txt", changes: 1 }] },
+    { role: "repository_commit", commit: f.base, recorded_in: { root: "run", path: "start.json" } },
+    { role: "working_tree_change", root: "adapter", path: "results/review-input.diff", diff_base: f.base, expect_stat: [{ path: "a.txt", changes: 3 }, { path: "b.txt", changes: 1 }] },
     { role: "plan", root: "run", path: "plan.md" },
   ],
   known_differences: [],
@@ -65,6 +67,7 @@ test("an adequate checkpoint is bundled with its inputs, and later files beside 
   const built = build(f, spec(f));
   assert.equal(built.record.adequacy.status, "adequate", JSON.stringify(built.record.adequacy));
   assert.equal(built.record.inputs[0].commit, before.head);
+  assert.equal(built.record.inputs[0].recorded_in.pointer, "start.json");
   assert.deepEqual(built.record.excluded, [{ root: "adapter", pointer: "results/review-findings-round-1.json", reason: "written_after_checkpoint" }]);
   const out = join(f.top, "bundle");
   writeBundle(out, built, [f.run, f.adapter, f.repo]);
@@ -109,6 +112,8 @@ test("a diff cut between two hunks of one file is incomplete, though it applies 
   writeFileSync(join(f.repo, "c.txt"), long);
   gitIn(f.repo, "add", "c.txt");
   gitIn(f.repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "c");
+  const c = gitIn(f.repo, "rev-parse", "HEAD");
+  writeFileSync(join(f.run, "start-c.json"), `${c}\n`);
   writeFileSync(join(f.repo, "c.txt"), long.replace("line 1\n", "line one\n").replace("line 28\n", "line twenty-eight\n"));
   const diff = gitIn(f.repo, "diff", "-U1") + "\n";
   gitIn(f.repo, "checkout", "-q", "--", ".");
@@ -116,7 +121,8 @@ test("a diff cut between two hunks of one file is incomplete, though it applies 
   writeFileSync(join(f.adapter, "results", "one-hunk.diff"), firstHunk);
   await pause(30);
   const s = spec(f, { at: { value: new Date().toISOString(), source: "artifact_field" } });
-  s.inputs[1] = { ...s.inputs[1], path: "results/one-hunk.diff", expect_stat: [{ path: "c.txt", changes: 4 }] };
+  s.inputs[0] = { role: "repository_commit", commit: c, recorded_in: { root: "run", path: "start-c.json" } };
+  s.inputs[1] = { ...s.inputs[1], path: "results/one-hunk.diff", diff_base: c, expect_stat: [{ path: "c.txt", changes: 4 }] };
   const { record } = build(f, s);
   assert.deepEqual(record.adequacy.failed.map((x) => x.reason), ["incomplete: its changed lines per path do not match the 1 path(s) the stage recorded"]);
 });
@@ -157,7 +163,7 @@ test("an input written after the checkpoint time cannot be part of it", async ()
 test("a commit the repository does not have leaves no code to start from", async () => {
   const f = await fixture();
   const s = spec(f);
-  s.inputs[0] = { role: "repository_commit", ref: "f".repeat(40) };
+  s.inputs[0] = { role: "repository_commit", commit: "f".repeat(40), recorded_in: { root: "run", path: "start.json" } };
   s.inputs[1] = { ...s.inputs[1], diff_base: "f".repeat(40) };
   const { record } = build(f, s);
   const reasons = record.adequacy.failed.map((x) => x.reason);
@@ -202,4 +208,23 @@ test("a file input from the repository root is refused, since its commit already
   const s = spec(f);
   s.inputs.push({ role: "plan", root: "repository", path: "a.txt" });
   assert.throws(() => build(f, s), /file inputs must be rooted at run or adapter/);
+});
+
+test("a commit is accepted only as a full id named by an artifact written before the checkpoint", async () => {
+  const f = await fixture();
+  const reasons = (s) => build(f, s).record.adequacy.failed.map((x) => x.reason);
+  // A ref names what it points to now, which may be later code than the stage saw.
+  const byRef = spec(f);
+  byRef.inputs[0] = { ...byRef.inputs[0], commit: "HEAD" };
+  assert.ok(reasons(byRef).includes("no full commit id"));
+  // The record has to name the commit.
+  writeFileSync(join(f.run, "other.json"), "{}\n");
+  const unnamed = spec(f);
+  unnamed.inputs[0] = { ...unnamed.inputs[0], recorded_in: { root: "run", path: "other.json" } };
+  assert.deepEqual(reasons(unnamed), ["not shown to be the commit the stage started from"]);
+  // A record written after the checkpoint does not show what the stage started from.
+  writeFileSync(join(f.run, "late.json"), `${f.base}\n`);
+  const late = spec(f);
+  late.inputs[0] = { ...late.inputs[0], recorded_in: { root: "run", path: "late.json" } };
+  assert.deepEqual(reasons(late), ["commit recorded only at or after the checkpoint time"]);
 });

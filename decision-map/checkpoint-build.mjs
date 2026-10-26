@@ -25,10 +25,22 @@ function git(repository, args, { input, env } = {}) {
   return { ok: r.status === 0, out: r.stdout ? r.stdout.toString("utf8").trim() : "", err: r.stderr ? r.stderr.toString("utf8").trim() : "" };
 }
 
-function resolveCommit(repository, ref) {
-  if (!repository) return null;
-  const r = git(repository, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]);
-  return r.ok ? r.out : null;
+const FULL_COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+// Only a full commit id is accepted: a ref names whatever it points to now, not what the stage saw.
+function resolveCommit(repository, id) {
+  if (!repository || !FULL_COMMIT.test(id || "")) return null;
+  const r = git(repository, ["rev-parse", "--verify", "--end-of-options", `${id}^{commit}`]);
+  return r.ok && r.out === id ? id : null;
+}
+
+// The artifact that records which commit the stage started from. It counts only if it names the id;
+// whether it was written before the checkpoint is decided by checkpoint.mjs from written_at.
+function commitRecord(reader, recordedIn, commit) {
+  if (!recordedIn || (recordedIn.root !== "run" && recordedIn.root !== "adapter") || !commit) return null;
+  const f = reader.read(recordedIn.root, recordedIn.path);
+  if (!f || !f.text.includes(commit)) return null;
+  return { root: recordedIn.root, pointer: recordedIn.path, sha256: f.sha, written_at: later(f.mtime, f.ctime) };
 }
 
 // Changed lines per path, as git itself reads the diff (`--numstat -z`, so quoted or escaped
@@ -132,9 +144,10 @@ export function buildCheckpoint({ spec, reader, repository }) {
   const commits = new Map();
   for (const s of spec.inputs || []) {
     if (s.role !== "repository_commit") continue;
-    const commit = resolveCommit(repository, s.ref);
-    inputs.push({ role: s.role, root: "repository", pointer: s.ref, ...(commit ? { commit } : {}), version_proof: "immutable_copy", complete: Boolean(commit) });
-    if (commit) commits.set(s.ref, commit);
+    const commit = resolveCommit(repository, s.commit);
+    const recorded = commitRecord(reader, s.recorded_in, commit);
+    inputs.push({ role: s.role, root: "repository", pointer: String(s.commit ?? ""), ...(commit ? { commit } : {}), ...(recorded ? { recorded_in: recorded } : {}), version_proof: "immutable_copy", complete: Boolean(commit) });
+    if (commit) commits.set(commit, commit);
   }
   for (const s of spec.inputs || []) {
     if (s.role === "repository_commit") continue;

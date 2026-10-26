@@ -19,6 +19,13 @@ function inputProblem(input, at) {
     // A commit is its own immutable copy: its id fixes its content.
     if (!COMMIT.test(input.commit || "")) return "no full commit id";
     if (input.version_proof !== "immutable_copy") return "a commit must be proven as an immutable copy";
+    // The id fixes the content, not that it was the code the stage started from: a ref resolved now
+    // may have moved since. That takes an artifact written before the checkpoint that names the id.
+    const rec = input.recorded_in;
+    if (!rec || !ROOTS.has(rec.root) || rec.root === "repository" || !rec.pointer || !SHA256.test(rec.sha256 || "")) {
+      return "not shown to be the commit the stage started from";
+    }
+    if (!(instant(rec.written_at) < at)) return "commit recorded only at or after the checkpoint time";
   } else if (!SHA256.test(input.sha256 || "")) {
     return "no content hash";
   }
@@ -35,7 +42,8 @@ function inputProblem(input, at) {
 /**
  * Recomputes a checkpoint record's adequacy.
  * - Without a checkpoint time nothing can be proven pre-decision, so the checkpoint is inadequate.
- * - At least one repository commit is required: without it the replay has no code to start from.
+ * - At least one repository commit is required: without it the replay has no code to start from. It
+ *   must be named by an artifact written before the checkpoint, so a ref that moved since cannot pass.
  * - Each input needs a version proof; a time proof needs a write time strictly before the checkpoint.
  * - An input that is not shown to be complete (a truncated diff, a partial copy) fails, even with a
  *   valid proof, because a replay from it would not see what the stage saw.
