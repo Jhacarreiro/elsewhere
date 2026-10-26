@@ -66,6 +66,8 @@ export function modelEnv(names, from) {
   return env;
 }
 
+const depth = (dir) => dir.split("/").filter(Boolean).length;
+
 // Always shown in the sandbox, read-only, where they exist.
 export const SYSTEM_DIRS = ["/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/etc"];
 
@@ -175,12 +177,18 @@ export function modelCommand({ cli, cliArgs, hide, readable = [], writable = [] 
   return {
     file: bwrap,
     args: [
-      ...[...system, ...readable].flatMap((dir) => ["--ro-bind", dir, dir]),
+      ...system.flatMap((dir) => ["--ro-bind", dir, dir]),
       "--dev", "/dev",
       "--proc", "/proc",
       "--tmpfs", "/tmp",
-      ...writable.flatMap((dir) => ["--bind", dir, dir]),
-      ...hide.flatMap((dir) => ["--tmpfs", dir]),
+      // Shallower first, so a directory named inside another one wins: a hidden directory inside a
+      // readable one stays empty, and a readable one inside a hidden one (the CLI's install inside
+      // its state directory, say) is still there.
+      ...[
+        ...readable.map((dir) => ["--ro-bind", dir, dir]),
+        ...writable.map((dir) => ["--bind", dir, dir]),
+        ...hide.map((dir) => ["--tmpfs", dir]),
+      ].sort((a, b) => depth(a.at(-1)) - depth(b.at(-1))).flat(),
       "--remount-ro", "/",
       "--setenv", "HOME", home,
       "--chdir", home,

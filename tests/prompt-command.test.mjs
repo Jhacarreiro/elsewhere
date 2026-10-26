@@ -142,8 +142,11 @@ test("--hide runs the CLI under bwrap showing only system and readable directori
   const hidden = mkdtempSync(join(tmpdir(), "prompt-hidden-"));
   assert.deepEqual(modelCommand({ cli: "codex", cliArgs: ["exec", "-"], hide: [hidden], readable: ["/opt/cli"], writable: ["/w"] }, "bwrap", ["/usr"]), {
     file: "bwrap",
-    args: ["--ro-bind", "/usr", "/usr", "--ro-bind", "/opt/cli", "/opt/cli", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--bind", "/w", "/w", "--tmpfs", hidden, "--remount-ro", "/", "--setenv", "HOME", "/w", "--chdir", "/w", "--unshare-pid", "--die-with-parent", "--", "codex", "exec", "-"],
+    args: ["--ro-bind", "/usr", "/usr", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--bind", "/w", "/w", "--ro-bind", "/opt/cli", "/opt/cli", "--tmpfs", hidden, "--remount-ro", "/", "--setenv", "HOME", "/w", "--chdir", "/w", "--unshare-pid", "--die-with-parent", "--", "codex", "exec", "-"],
   });
+  // A directory named inside another is mounted after it, so it wins either way round.
+  const nested = modelCommand({ cli: "c", cliArgs: [], hide: ["/data/state", "/data/x/run"], readable: ["/data/state/npm", "/data/x"] }, "bwrap", []).args;
+  assert.deepEqual(nested.slice(6, nested.indexOf("--remount-ro")), ["--ro-bind", "/data/x", "/data/x", "--tmpfs", "/data/state", "--ro-bind", "/data/state/npm", "/data/state/npm", "--tmpfs", "/data/x/run"]);
   // Nothing outside the system directories is shown by default, the host's root least of all.
   const { args } = modelCommand({ cli: "codex", cliArgs: [], hide: [hidden] });
   const shown = args.flatMap((a, i) => (a === "--ro-bind" ? [args[i + 1]] : []));
