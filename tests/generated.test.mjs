@@ -10,6 +10,7 @@ function record(section) {
     schema_version: 0,
     id: "dec_0123456789abcdef",
     state: "decided",
+    time: { value: "2026-01-15T16:40:00Z", source: "artifact_field" },
     alternatives: { status: "unknown", items: [] },
     generated_alternatives: {
       status: "generated",
@@ -72,15 +73,25 @@ test("an unsupported assumption never carries evidence, so it cannot look ground
   assert.deepEqual(out.generated_alternatives.items[0].assumptions[1].evidence, []);
 });
 
-test("without a decision time nothing is generated, and the map is told why", () => {
-  const { record: out, dropped } = applyGeneratedRules(record({
-    boundary: { value: null, source: "unknown" },
-    items: [alternative("a", [{ text: "Grounded", basis: "grounded", evidence: [proof()] }])],
-  }));
+test("without a decision time nothing is generated, even if the generator supplied a boundary", () => {
+  const { record: out, dropped } = applyGeneratedRules({
+    ...record({ items: [alternative("a", [{ text: "Grounded", basis: "grounded", evidence: [proof()] }])] }),
+    time: { value: null, source: "unknown" },
+  });
   assert.equal(out.generated_alternatives.status, "withheld");
   assert.deepEqual(out.generated_alternatives.items, []);
   assert.match(out.generated_alternatives.reason, /decision time/);
   assert.equal(dropped[0].reason, "no decision time");
+});
+
+test("a boundary later than the decision time is not trusted as the cutoff", () => {
+  const { record: out, dropped } = applyGeneratedRules(record({
+    boundary: { value: "2026-01-20T00:00:00Z", source: "artifact_field" },
+    items: [alternative("a", [{ text: "Grounded", basis: "grounded", evidence: [proof()] }])],
+  }));
+  assert.equal(out.generated_alternatives.status, "withheld");
+  assert.deepEqual(out.generated_alternatives.items, []);
+  assert.equal(dropped[0].reason, "boundary is not the decision time");
 });
 
 test("a withheld section keeps its reason and drops any items", () => {

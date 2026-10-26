@@ -30,7 +30,7 @@ An emitting adapter appends one record per line to `decisions.jsonl` in its atte
 `generated_alternatives` is an optional section for alternatives proposed after the run by a generator. It is kept apart from `alternatives`, which only reports what the run's own artifacts say, so a reader never confuses the two.
 
 - **Status.** `generated` means the generator ran on verified pre-decision evidence; zero items is a valid result. `withheld` means nothing was generated, and `reason` says why. A decision without a known time is always withheld, because there is no cutoff for the evidence.
-- **Boundary.** `boundary` is the decision time used as the cutoff, with its source.
+- **Boundary.** `boundary` is the decision time used as the cutoff, with its source. It must be the record's own `time` (same instant and source); any other boundary withholds the section, so a later cutoff cannot let post-decision evidence count.
 - **Assumptions.** Each alternative lists its assumptions. A `grounded` assumption cites evidence with a `version_proof` showing which version of the artifact existed at the decision time: `immutable_copy`, `pre_decision_hash` or `pre_decision_time`. An `unsupported` assumption carries no evidence and is shown as such. Every alternative has at least one grounded assumption.
 - **Consequences and classification.** `potential_consequences` are always hypotheses. Each item is classified `generated` and is never executed.
 

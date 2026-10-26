@@ -15,9 +15,24 @@ function withheld(section, reason) {
   return { ...section, status: "withheld", reason, items: [] };
 }
 
+const instant = (value) => (typeof value === "string" ? Date.parse(value) : NaN);
+
+// The cutoff is only trustworthy if it is the record's own decision time: a missing decision time
+// leaves nothing to cut at, and a different boundary (later, or from another source) could let
+// evidence written after the decision count as pre-decision.
+function boundaryProblem(time, boundary) {
+  const decided = instant(time?.value);
+  if (Number.isNaN(decided)) return { dropped: "no decision time", reason: "No decision time, so no pre-decision cutoff." };
+  if (instant(boundary?.value) !== decided || boundary?.source !== time.source) {
+    return { dropped: "boundary is not the decision time", reason: "The evidence cutoff does not match the decision time." };
+  }
+  return null;
+}
+
 /**
  * Applies the generated-alternatives rules to one decision record.
- * - Without a decision time there is no evidence cutoff, so nothing is generated.
+ * - Without a decision time there is no evidence cutoff, so nothing is generated; a boundary that is
+ *   not the record's decision time is not trusted either.
  * - A grounded assumption keeps only evidence with a version proof; with none left it is dropped,
  *   not relabelled, because its claim was made on evidence that cannot be checked.
  * - An alternative with no grounded assumption left is dropped.
@@ -34,9 +49,10 @@ export function applyGeneratedRules(record) {
     for (const item of items) dropped.push({ option_id: item.option_id ?? null, summary: item.summary, reason: "section withheld" });
     return { record: { ...record, generated_alternatives: withheld(section, section.reason || "withheld without a reason") }, dropped };
   }
-  if (!section.boundary?.value) {
-    for (const item of items) dropped.push({ option_id: item.option_id ?? null, summary: item.summary, reason: "no decision time" });
-    return { record: { ...record, generated_alternatives: withheld(section, "No decision time, so no pre-decision cutoff.") }, dropped };
+  const cutoff = boundaryProblem(record.time, section.boundary);
+  if (cutoff) {
+    for (const item of items) dropped.push({ option_id: item.option_id ?? null, summary: item.summary, reason: cutoff.dropped });
+    return { record: { ...record, generated_alternatives: withheld(section, cutoff.reason) }, dropped };
   }
   const kept = [];
   for (const item of items) {
