@@ -1,4 +1,4 @@
-# Decision map (Phase 1 steps 3 to 6)
+# Decision map (Phase 1 steps 3 to 7)
 
 **Status:** working prototype. It reads finished runs and draws their decisions. Extraction never changes a run; `map-run.mjs` only adds its own `decision-map/` folder to the run it maps. Nothing changes a runner or runtime.
 
