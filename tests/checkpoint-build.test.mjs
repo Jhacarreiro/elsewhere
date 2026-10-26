@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createReader } from "../decision-map/extract.mjs";
@@ -43,7 +43,7 @@ const spec = (f, over = {}) => ({
   at: { value: f.at, source: "artifact_field" },
   inputs: [
     { role: "repository_commit", ref: "HEAD" },
-    { role: "working_tree_change", root: "adapter", path: "results/review-input.diff", diff_base: "HEAD", expect_paths: ["a.txt", "b.txt"] },
+    { role: "working_tree_change", root: "adapter", path: "results/review-input.diff", diff_base: "HEAD", expect_stat: [{ path: "a.txt", changes: 3 }, { path: "b.txt", changes: 1 }] },
     { role: "plan", root: "run", path: "plan.md" },
   ],
   known_differences: [],
@@ -100,7 +100,49 @@ test("a diff that applies but lacks a file the stage recorded is incomplete", as
   const s = spec(f, { at: { value: new Date().toISOString(), source: "artifact_field" } });
   s.inputs[1] = { ...s.inputs[1], path: "results/only-a.diff" };
   const { record } = build(f, s);
-  assert.deepEqual(record.adequacy.failed.map((x) => x.reason), ["incomplete: touches 1 path(s), the stage recorded 2"]);
+  assert.deepEqual(record.adequacy.failed.map((x) => x.reason), ["incomplete: its changed lines per path do not match the 2 path(s) the stage recorded"]);
+});
+
+test("a diff cut between two hunks of one file is incomplete, though it applies and names every path", async () => {
+  const f = await fixture();
+  const long = Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n") + "\n";
+  writeFileSync(join(f.repo, "c.txt"), long);
+  gitIn(f.repo, "add", "c.txt");
+  gitIn(f.repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "c");
+  writeFileSync(join(f.repo, "c.txt"), long.replace("line 1\n", "line one\n").replace("line 28\n", "line twenty-eight\n"));
+  const diff = gitIn(f.repo, "diff", "-U1") + "\n";
+  gitIn(f.repo, "checkout", "-q", "--", ".");
+  const firstHunk = diff.slice(0, diff.lastIndexOf("@@ -"));
+  writeFileSync(join(f.adapter, "results", "one-hunk.diff"), firstHunk);
+  await pause(30);
+  const s = spec(f, { at: { value: new Date().toISOString(), source: "artifact_field" } });
+  s.inputs[1] = { ...s.inputs[1], path: "results/one-hunk.diff", expect_stat: [{ path: "c.txt", changes: 4 }] };
+  const { record } = build(f, s);
+  assert.deepEqual(record.adequacy.failed.map((x) => x.reason), ["incomplete: its changed lines per path do not match the 1 path(s) the stage recorded"]);
+});
+
+test("paths git quotes, such as non-ASCII names, are compared as git reads them", async () => {
+  const f = await fixture();
+  writeFileSync(join(f.repo, "café.txt"), "x\n");
+  gitIn(f.repo, "add", "-N", "café.txt");
+  const diff = gitIn(f.repo, "diff");
+  gitIn(f.repo, "rm", "-q", "--cached", "café.txt");
+  rmSync(join(f.repo, "café.txt"));
+  assert.match(diff, /"b\/caf\\303\\251\.txt"/);
+  writeFileSync(join(f.adapter, "results", "quoted.diff"), diff + "\n");
+  await pause(30);
+  const s = spec(f, { at: { value: new Date().toISOString(), source: "artifact_field" } });
+  s.inputs[1] = { ...s.inputs[1], path: "results/quoted.diff", expect_stat: [{ path: "café.txt", changes: 1 }] };
+  assert.equal(build(f, s).record.adequacy.status, "adequate");
+});
+
+test("without recorded change counts a diff's completeness stays unproven", async () => {
+  const f = await fixture();
+  const s = spec(f);
+  const { expect_stat, ...noStat } = s.inputs[1];
+  s.inputs[1] = noStat;
+  const { record } = build(f, s);
+  assert.deepEqual(record.adequacy.failed.map((x) => x.reason), ["incomplete: no recorded change counts to check it against"]);
 });
 
 test("an input written after the checkpoint time cannot be part of it", async () => {

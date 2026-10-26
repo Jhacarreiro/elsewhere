@@ -31,30 +31,41 @@ function resolveCommit(repository, ref) {
   return r.ok ? r.out : null;
 }
 
-// Paths a unified diff touches, from its headers.
-function diffPaths(bytes) {
-  const paths = new Set();
-  for (const line of bytes.toString("utf8").split("\n")) {
-    const m = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
-    if (m) paths.add(m[2]);
+// Changed lines per path, as git itself reads the diff (`--numstat -z`, so quoted or escaped
+// paths come back verbatim). A binary change counts as null. A rename is listed under its new path.
+function diffStat(repository, bytes, env) {
+  const r = spawnSync("git", ["-C", repository, "apply", "--numstat", "-z", "-"], { input: bytes, env: { ...process.env, ...env }, encoding: "buffer", maxBuffer: 64 * 1024 * 1024 });
+  if (r.status !== 0) return null;
+  const fields = r.stdout.toString("utf8").split("\0");
+  const stat = new Map();
+  for (let i = 0; i < fields.length; i += 1) {
+    const m = /^(\d+|-)\t(\d+|-)\t(.*)$/s.exec(fields[i]);
+    if (!m) continue;
+    let path = m[3];
+    if (path === "") { path = fields[i + 2]; i += 2; }
+    const changes = m[1] === "-" ? null : Number(m[1]) + Number(m[2]);
+    stat.set(path, changes);
   }
-  return [...paths].sort();
+  return stat;
 }
 
-// A diff is complete when it applies cleanly to its base commit and, if the stage recorded which
-// paths changed, touches exactly those. Applying alone is not enough: a diff cut off at a file
-// boundary still applies, it just lacks the later files.
-function diffCompleteness(repository, commit, bytes, expectPaths) {
+// A diff is complete only when it applies cleanly to its base commit and its changed-line count per
+// path matches what the stage recorded (`expect_stat`, from a diff stat written before the decision).
+// Applying alone proves nothing about completeness: a diff cut off at a file or hunk boundary still
+// applies. Without recorded counts there is nothing to check against, so completeness stays unproven.
+function diffCompleteness(repository, commit, bytes, expectStat) {
   const scratch = mkdtempSync(join(tmpdir(), "elsewhere-checkpoint-"));
   try {
     const env = { GIT_INDEX_FILE: join(scratch, "index") };
     if (!git(repository, ["read-tree", commit], { env }).ok) return "base commit cannot be read";
     const applied = git(repository, ["apply", "--cached", "--check", "-"], { input: bytes, env });
     if (!applied.ok) return `does not apply to its base commit (${applied.err.split("\n")[0] || "git apply failed"})`;
-    if (Array.isArray(expectPaths)) {
-      const want = [...expectPaths].sort();
-      const got = diffPaths(bytes);
-      if (want.join("\n") !== got.join("\n")) return `touches ${got.length} path(s), the stage recorded ${want.length}`;
+    if (!Array.isArray(expectStat)) return "no recorded change counts to check it against";
+    const got = diffStat(repository, bytes, env);
+    if (!got) return "git cannot count its changes";
+    const want = new Map(expectStat.map((e) => [e.path, e.changes ?? null]));
+    if (got.size !== want.size || [...want].some(([path, changes]) => !got.has(path) || got.get(path) !== changes)) {
+      return `its changed lines per path do not match the ${want.size} path(s) the stage recorded`;
     }
     return null;
   } finally {
@@ -123,7 +134,7 @@ export function buildCheckpoint({ spec, reader, repository }) {
     const { input, bytes } = fileInput(reader, s);
     if (bytes && s.diff_base !== undefined) {
       const base = commits.get(s.diff_base);
-      const problem = base ? diffCompleteness(repository, base, bytes, s.expect_paths) : "its base commit is not an input";
+      const problem = base ? diffCompleteness(repository, base, bytes, s.expect_stat) : "its base commit is not an input";
       if (problem) Object.assign(input, { complete: false, incomplete_reason: problem });
     }
     inputs.push(input);
