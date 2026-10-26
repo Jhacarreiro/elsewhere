@@ -109,3 +109,20 @@ test("zero generated alternatives is a valid result, not a withheld one", () => 
   assert.equal(out.generated_alternatives.status, "generated");
   assert.deepEqual(out.generated_alternatives.items, []);
 });
+
+test("the extractor never writes generated alternatives, so records without the section stay valid under the earlier v0 schema", async () => {
+  const { extract } = await import("../decision-map/extract.mjs");
+  const fixtures = new URL("./fixtures/", import.meta.url).pathname;
+  const records = extract({ runDir: `${fixtures}run-a`, adapterDir: `${fixtures}octopus` });
+  assert.ok(records.length > 0);
+  assert.ok(records.every((r) => !("generated_alternatives" in r)));
+});
+
+test("the map still renders a record that carries generated alternatives", async () => {
+  const { renderMap } = await import("../decision-map/render.mjs");
+  const { record: out } = applyGeneratedRules(record({
+    items: [alternative("a", [{ text: "The plan named two options", basis: "grounded", evidence: [proof()] }])],
+  }));
+  const html = renderMap([{ ...out, run: { run_id: "r" }, stage: "planning", decided_by: { kind: "human" }, question: "Q?", chosen: null, classification: "observed", evidence: [], producer: { name: "x", version: "0", mode: "extracted" } }]);
+  assert.match(html, /Q\?/);
+});
