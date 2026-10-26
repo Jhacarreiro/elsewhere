@@ -82,7 +82,7 @@ function readContained(root, rel, maxBytes) {
       if (n === 0) break;
       off += n;
     }
-    return { buf: buf.subarray(0, off), mtime: st.mtime.toISOString() };
+    return { buf: buf.subarray(0, off), mtime: st.mtime.toISOString(), ctime: st.ctime.toISOString() };
   } finally {
     closeSync(fd);
   }
@@ -109,7 +109,7 @@ export function createReader({ runDir, adapterDir = null, maxBytes = MAX_ARTIFAC
     if (!cache.has(key)) {
       try {
         const f = readContained(pinned, rel, maxBytes);
-        cache.set(key, f && { text: f.buf.toString("utf8"), sha: sha256(f.buf), mtime: f.mtime });
+        cache.set(key, f && { text: f.buf.toString("utf8"), sha: sha256(f.buf), mtime: f.mtime, ctime: f.ctime });
       } catch {
         cache.set(key, null);
       }

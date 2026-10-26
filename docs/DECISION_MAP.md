@@ -1,8 +1,8 @@
-# Decision map (Phase 1 steps 3 to 7)
+# Decision map (Phase 1 steps 3 to 7, Phase 2 step 2)
 
 **Status:** working prototype. It reads finished runs and draws their decisions. Extraction never changes a run; `map-run.mjs` only adds its own `decision-map/` folder to the run it maps. Nothing changes a runner or runtime.
 
-Four small, dependency-free Node modules in [`decision-map/`](../decision-map):
+Small, dependency-free Node modules in [`decision-map/`](../decision-map):
 
 | Module | Step | What it does |
 | --- | --- | --- |
@@ -10,6 +10,7 @@ Four small, dependency-free Node modules in [`decision-map/`](../decision-map):
 | `render.mjs` | 4 | Turns decision records into one self-contained HTML page: one line per decision, details on expansion. |
 | `filter.mjs` | 5 | Selects which records the map shows, by impact, uncertainty, cost and reversibility. Records are never changed or dropped from the source. |
 | `map-run.mjs` | - | Extracts and renders one run and keeps the result in that run's `decision-map/` folder, for use at the end of every run. |
+| `generate.mjs` | Phase 2, 2 | Proposes generated alternatives per decision through a configured command, from pre-decision artifacts only. Read-only. See [generated alternatives](#generated-alternatives). |
 
 ## Usage
 
@@ -17,6 +18,7 @@ Four small, dependency-free Node modules in [`decision-map/`](../decision-map):
 node decision-map/extract.mjs --run <run-dir> [--adapter <octopus-home>] > decisions.jsonl
 node decision-map/render.mjs --in decisions.jsonl --out map.html --title "Run map" [--min-impact high] [--exclude-unknown]
 node decision-map/map-run.mjs [--adapter <octopus-home>] <run-dir>
+node decision-map/generate.mjs [--adapter <octopus-home>] [--decision <id>]... <run-dir> -- <command> [args...] > generated.jsonl
 npm test
 ```
 
@@ -27,6 +29,16 @@ Other filter flags: `--min-uncertainty`, `--min-cost` (`low|medium|high`) and `-
 `map-run.mjs` does both steps for one run and writes `decisions.jsonl` and `map.html` into a `decision-map/` folder inside the run directory, replacing any earlier map. It prints one JSON line (`ok`, `records`, `pending`, or `ok: false` with an `error`, also for a bad invocation), so it can be configured as the Development Cycle's run-end command, which appends the run directory as the last argument. Nothing is published: the map stays with the run's private state.
 
 It reads the records from the same open run directory it writes into. The new files are created (never overwritten) in a fresh, randomly named folder inside the run, which is then renamed to `decision-map/`; the previous map folder is moved aside and only its two map files are removed. Every rename names entries of the open run directory, so swapping paths while it runs cannot make it replace anything outside the run. It refuses a `decision-map` entry that is not a plain directory.
+
+## Generated alternatives
+
+`generate.mjs` adds a [`generated_alternatives`](DECISION_RECORD.md#generated-alternatives-phase-2) section to each decision of one finished run (or only those named with `--decision`) and writes the records to stdout; a one-line JSON summary goes to stderr. It never writes into the run.
+
+- **Which artifacts it may use.** The candidates are the files that the run's records point to. A file counts as pre-decision only when both its modification time and its change time are earlier than the decision. The change time cannot be set back, so a file renamed into place or with its modification time reset after the decision is excluded. The version read is then the version that existed at decision time, and its evidence carries `version_proof: pre_decision_time` with the hash of that version. At most the 8 latest such files are used, up to 12,000 characters each.
+- **What makes it withhold.** A decision with no time, or with no file that passes that check, gets a `withheld` section with the reason, and the command is not called. A command that fails, times out or replies with invalid JSON also withholds, with the reason.
+- **The command.** No model or provider is fixed. The command after `--` gets one JSON request on stdin: the decision (question, stage, time, chosen option, listed alternatives) and the allowed artifacts with refs. It answers with `{"alternatives": [...]}` on stdout, each with a summary, assumptions, potential consequences and uncertainty. A grounded assumption cites an artifact ref and a verbatim quote. A citation counts only if the ref was given and the quote is in what the command was shown. Hash and version proof come from the reader, never from the reply. An assumption whose citations all fail is dropped, not kept as a guess. The [generated rules](DECISION_RECORD.md#generated-alternatives-phase-2) then drop any alternative left without a grounded assumption.
+- **What leaves the machine.** The request contains the allowed artifacts' text. If the command calls a hosted model, that text goes to its provider, so the operator chooses the command with that in mind.
+- **Trust in times.** The check trusts the file system's times on the machine that ran the cycle. A run directory copied elsewhere has new change times, so everything in it is withheld; that is the intended result, not an error.
 
 ## What is extracted
 
@@ -59,7 +71,7 @@ The adapter home holds artifacts from many runs. A ledger counts as this run's w
 
 ## Checked so far
 
-- Tests: `tests/decision-map.test.mjs` runs on a synthetic run in `tests/fixtures/`. It checks behaviour, not output snapshots: extraction leaves the source untouched, evidence hashes match, ids are stable, unrelated adapter artifacts are excluded, pending decisions are never filtered out, and recorded text is escaped in the HTML.
+- Tests: `tests/generate.test.mjs` checks that only pre-decision artifacts reach the command, that a reset modification time does not pass, that citations are checked against the artifact text, and that a failing command withholds. `tests/decision-map.test.mjs` runs on a synthetic run in `tests/fixtures/`. It checks behaviour, not output snapshots: extraction leaves the source untouched, evidence hashes match, ids are stable, unrelated adapter artifacts are excluded, pending decisions are never filtered out, and recorded text is escaped in the HTML.
 - Two private baseline runs (22 and 81 records) were extracted locally and every record validated against the v0 schema. On the second run, the map shows in order what was earlier found only by reading its artifacts by hand: the corrections attempt failed after its third round, and the delivery that followed was partial. Whether that is faster for a person is not measured yet. The second run is published as a [sanitized example](../examples/baseline-round-8kv859/README.md) with its map.
 
 ## Known limits

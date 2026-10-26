@@ -36,7 +36,7 @@ An emitting adapter appends one record per line to `decisions.jsonl` in its atte
 - **Assumptions.** Each alternative lists its assumptions. A `grounded` assumption cites evidence with a `version_proof` showing which version of the artifact existed at the decision time: `immutable_copy`, `pre_decision_hash` or `pre_decision_time`. An `unsupported` assumption carries no evidence and is shown as such. Every alternative has at least one grounded assumption.
 - **Consequences and classification.** `potential_consequences` are always hypotheses. Each item is classified `generated` and is never executed.
 
-[`decision-map/generated.mjs`](../decision-map/generated.mjs) applies these rules to a record. It drops evidence without a version proof, then drops assumptions left without evidence and alternatives left without a grounded assumption, and reports what it dropped and why. Whether a version proof is true is checked against the files by the generator, which is Phase 2 step 2.
+[`decision-map/generated.mjs`](../decision-map/generated.mjs) applies these rules to a record. It drops evidence without a version proof, then drops assumptions left without evidence and alternatives left without a grounded assumption, and reports what it dropped and why. Whether a version proof is true is checked against the files by the generator, [`decision-map/generate.mjs`](DECISION_MAP.md#generated-alternatives).
 
 ## Mapping from existing artifacts
 
