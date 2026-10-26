@@ -2,16 +2,20 @@
 // model CLI that reads a prompt on stdin and prints its answer on stdout, and turns the answer back
 // into the JSON reply generate.mjs expects. Which CLI and model is the operator's choice.
 //
-//   node decision-map/generate.mjs <run-dir> -- node decision-map/prompt-command.mjs [--keep <dir>] [--hide <dir>]... [--writable <dir>]... [--sandbox-env <NAME>] [--env <NAME>]... -- <cli> [args...]
-//   node decision-map/prompt-command.mjs --hide <dir>... [--writable <dir>]... --probe
+//   node decision-map/generate.mjs <run-dir> -- node decision-map/prompt-command.mjs [--keep <dir>] [--hide <dir>]... [--readable <dir>]... [--writable <dir>]... [--sandbox-env <NAME>] [--env <NAME>]... -- <cli> [args...]
+//   node decision-map/prompt-command.mjs --hide <dir>... [--readable <dir>]... [--writable <dir>]... --probe
 //
 // With --keep, every exchange is written to <dir>/<decision id>.json (request, raw answer, parsed
 // reply), so counts that need what the model proposed before any rule dropped it can be recomputed.
 //
-// With --hide, the CLI runs under bwrap (Linux) in a sandbox: the host's root is read-only, each hidden
-// directory is an empty tmpfs, /tmp is a private tmpfs, /dev and /proc are its own, and only the
-// --writable directories (the CLI's own state, say) can be written. A CLI that can read files then does
-// not see what happened after the decision, and cannot change anything else. Without bwrap the
+// With --hide, the CLI runs under bwrap (Linux) in a sandbox that shows nothing of the host by default:
+// only the system directories (SYSTEM_DIRS) and the --readable ones (where the CLI is installed, say)
+// are there, read-only; the --writable directories (the CLI's own state) can be written; each hidden
+// directory is an empty tmpfs; /tmp is a private tmpfs, /dev and /proc are its own, and the root is
+// read-only. HOME is the first writable directory (or /tmp), which is also where it starts. A CLI that
+// can read files then sees neither what happened after the decision nor the host's credential files,
+// and cannot change anything else. The --readable directories are the operator's to keep free of
+// credentials. Without bwrap the
 // command fails rather than run the CLI unhidden. The CLI keeps network access to reach its model;
 // keeping the commands it runs itself off the network is its own sandbox's job (for Codex,
 // --sandbox read-only), which the operator names in the command line.
@@ -35,7 +39,7 @@
 // running and nothing kept. The model runs in its own process group, and the whole group is stopped,
 // so a CLI that forks the real model leaves nothing running into the next decision.
 import { spawn } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { DEFAULT_TIMEOUT_MS } from "./generate.mjs";
@@ -62,10 +66,13 @@ export function modelEnv(names, from) {
   return env;
 }
 
+// Always shown in the sandbox, read-only, where they exist.
+export const SYSTEM_DIRS = ["/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/etc"];
+
 // The most the model may print; past it the model is stopped and the decision withheld.
 export const MAX_ANSWER_BYTES = 8 * 1024 * 1024;
 
-const USAGE = "Usage: node decision-map/prompt-command.mjs [--keep <dir>] [--hide <dir>]... [--writable <dir>]... [--sandbox-env <NAME>] [--env <NAME>]... [--timeout-seconds <n, capped below generate.mjs's deadline>] -- <cli> [args...]\n       node decision-map/prompt-command.mjs --hide <dir>... [--writable <dir>]... --probe";
+const USAGE = "Usage: node decision-map/prompt-command.mjs [--keep <dir>] [--hide <dir>]... [--readable <dir>]... [--writable <dir>]... [--sandbox-env <NAME>] [--env <NAME>]... [--timeout-seconds <n, capped below generate.mjs's deadline>] -- <cli> [args...]\n       node decision-map/prompt-command.mjs --hide <dir>... [--readable <dir>]... [--writable <dir>]... --probe";
 
 export function prompt(request) {
   const artifacts = request.artifacts.map((a) => [
@@ -146,32 +153,37 @@ function parseArgs(argv, env) {
   // comes out of the model's time and not out of the margin.
   const startedAt = Number(env.DECISION_MAP_GENERATOR_DEADLINE) > 0 ? Number(env.DECISION_MAP_GENERATOR_DEADLINE) - generatorMs : Date.now();
   const limit = Math.max(0, modelDeadline(generatorMs) - (Date.now() - startedAt));
-  const args = { cli: argv[split + 1], cliArgs: argv.slice(split + 2), timeoutMs: limit, graceMs: killGrace(generatorMs), hide: [], writable: [], env: [] };
+  const args = { cli: argv[split + 1], cliArgs: argv.slice(split + 2), timeoutMs: limit, graceMs: killGrace(generatorMs), hide: [], readable: [], writable: [], env: [] };
   for (let i = 0; i < own.length; i += 1) {
     if (own[i] === "--keep" && i + 1 < own.length) args.keep = own[++i];
     else if (own[i] === "--hide" && i + 1 < own.length) args.hide.push(resolve(own[++i]));
+    else if (own[i] === "--readable" && i + 1 < own.length) args.readable.push(resolve(own[++i]));
     else if (own[i] === "--writable" && i + 1 < own.length) args.writable.push(resolve(own[++i]));
     else if (own[i] === "--sandbox-env" && /^[A-Z_][A-Z0-9_]*$/.test(own[i + 1] || "")) args.sandboxEnv = own[++i];
     else if (own[i] === "--env" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(own[i + 1] || "")) args.env.push(own[++i]);
     else if (own[i] === "--timeout-seconds" && Number(own[i + 1]) > 0) args.timeoutMs = Math.min(Number(own[++i]) * 1000, limit);
     else throw new Error(`Unknown argument: ${own[i]}. ${USAGE}`);
   }
-  if ((args.writable.length || args.sandboxEnv) && !args.hide.length) throw new Error(`--writable and --sandbox-env only apply with --hide. ${USAGE}`);
+  if ((args.readable.length || args.writable.length || args.sandboxEnv) && !args.hide.length) throw new Error(`--readable, --writable and --sandbox-env only apply with --hide. ${USAGE}`);
   return args;
 }
 
 // The CLI as it is run: in the bwrap sandbox when anything is hidden.
-export function modelCommand({ cli, cliArgs, hide, writable = [] }, bwrap = "bwrap") {
+export function modelCommand({ cli, cliArgs, hide, readable = [], writable = [] }, bwrap = "bwrap", system = SYSTEM_DIRS.filter((dir) => existsSync(dir))) {
   if (!hide.length) return { file: cli, args: cliArgs };
+  const home = writable[0] || "/tmp";
   return {
     file: bwrap,
     args: [
-      "--ro-bind", "/", "/",
+      ...[...system, ...readable].flatMap((dir) => ["--ro-bind", dir, dir]),
       "--dev", "/dev",
       "--proc", "/proc",
       "--tmpfs", "/tmp",
       ...writable.flatMap((dir) => ["--bind", dir, dir]),
       ...hide.flatMap((dir) => ["--tmpfs", dir]),
+      "--remount-ro", "/",
+      "--setenv", "HOME", home,
+      "--chdir", home,
       "--unshare-pid", "--die-with-parent",
       "--", cli, ...cliArgs,
     ],
@@ -192,14 +204,17 @@ done
 exit $ok`;
 
 // The CLI as it is run with --sandbox-env: outside, with the sandbox's argv prefix in that variable.
-export function sandboxEnvCommand(args, bwrap = "bwrap") {
+export function sandboxPrefix(args, bwrap = "bwrap") {
   const sandbox = modelCommand(args, bwrap);
-  const prefix = [sandbox.file, ...sandbox.args.slice(0, sandbox.args.indexOf("--") + 1)];
-  return { file: args.cli, args: args.cliArgs, env: { [args.sandboxEnv]: JSON.stringify(prefix) } };
+  return [sandbox.file, ...sandbox.args.slice(0, sandbox.args.indexOf("--") + 1)];
 }
 
-export function probeCommand({ hide, writable }) {
-  return { cli: "sh", cliArgs: ["-c", PROBE, "probe", ...hide, "--", ...writable], hide, writable };
+export function sandboxEnvCommand(args, bwrap = "bwrap") {
+  return { file: args.cli, args: args.cliArgs, env: { [args.sandboxEnv]: JSON.stringify(sandboxPrefix(args, bwrap)) } };
+}
+
+export function probeCommand({ hide, readable, writable }) {
+  return { cli: "sh", cliArgs: ["-c", PROBE, "probe", ...hide, "--", ...writable], hide, readable, writable };
 }
 
 function killGroup(pid, signal) {
@@ -268,12 +283,18 @@ if (isMain) {
   }
   const request = JSON.parse(readFileSync(0, "utf8"));
   const command = args.sandboxEnv ? sandboxEnvCommand(args, bwrap) : modelCommand(args, bwrap);
-  const result = await run({ ...command, env: { ...modelEnv(args.env, process.env), ...command.env } }, prompt(request), args.timeoutMs, args.graceMs);
+  const env = { ...modelEnv(args.env, process.env), ...command.env };
+  const result = await run({ ...command, env }, prompt(request), args.timeoutMs, args.graceMs);
   const answer = result.stdout;
   const reply = result.status === 0 ? parseAnswer(answer) : null;
   if (args.keep) {
     writeFileSync(join(args.keep, `${request.decision.id}.json`), `${JSON.stringify({
       request,
+      // What ran: the CLI and its arguments (the model among them), the sandbox it ran in, and the
+      // names (not values) of the variables it got.
+      command: [args.cli, ...args.cliArgs],
+      sandbox: args.hide.length ? sandboxPrefix(args, bwrap) : null,
+      env: Object.keys(env).sort(),
       exit: result.status ?? result.signal ?? (result.error ? String(result.error.code || result.error) : null),
       answer,
       reply,

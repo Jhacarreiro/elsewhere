@@ -2,10 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createReader } from "../decision-map/extract.mjs";
 import { generateAlternatives } from "../decision-map/generate.mjs";
-import { DEFAULT_MODEL_TIMEOUT_MS, killGrace, MODEL_ENV, modelCommand, modelDeadline, parseAnswer } from "../decision-map/prompt-command.mjs";
+import { DEFAULT_MODEL_TIMEOUT_MS, killGrace, MODEL_ENV, modelCommand, modelDeadline, parseAnswer, SYSTEM_DIRS } from "../decision-map/prompt-command.mjs";
 import { spawnSync } from "node:child_process";
 import { DEFAULT_TIMEOUT_MS } from "../decision-map/generate.mjs";
 
@@ -138,12 +138,17 @@ test("a timed-out model's whole process group is stopped, children included", ()
   });
 });
 
-test("--hide runs the CLI under bwrap with each directory as an empty tmpfs and its own /proc", () => {
+test("--hide runs the CLI under bwrap showing only system and readable directories, each hidden one as an empty tmpfs", () => {
   const hidden = mkdtempSync(join(tmpdir(), "prompt-hidden-"));
-  assert.deepEqual(modelCommand({ cli: "codex", cliArgs: ["exec", "-"], hide: [hidden], writable: ["/w"] }), {
+  assert.deepEqual(modelCommand({ cli: "codex", cliArgs: ["exec", "-"], hide: [hidden], readable: ["/opt/cli"], writable: ["/w"] }, "bwrap", ["/usr"]), {
     file: "bwrap",
-    args: ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--bind", "/w", "/w", "--tmpfs", hidden, "--unshare-pid", "--die-with-parent", "--", "codex", "exec", "-"],
+    args: ["--ro-bind", "/usr", "/usr", "--ro-bind", "/opt/cli", "/opt/cli", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--bind", "/w", "/w", "--tmpfs", hidden, "--remount-ro", "/", "--setenv", "HOME", "/w", "--chdir", "/w", "--unshare-pid", "--die-with-parent", "--", "codex", "exec", "-"],
   });
+  // Nothing outside the system directories is shown by default, the host's root least of all.
+  const { args } = modelCommand({ cli: "codex", cliArgs: [], hide: [hidden] });
+  const shown = args.flatMap((a, i) => (a === "--ro-bind" ? [args[i + 1]] : []));
+  assert.ok(shown.every((dir) => SYSTEM_DIRS.includes(dir)), shown.join(" "));
+  assert.equal(args[args.indexOf("HOME") + 1], "/tmp");
   const log = join(hidden, "..", `${hidden.split("/").pop()}.bwrap-log`);
   const saved = { bwrap: process.env.DECISION_MAP_BWRAP, log: process.env.FAKE_BWRAP_LOG };
   try {
@@ -152,7 +157,12 @@ test("--hide runs the CLI under bwrap with each directory as an empty tmpfs and 
     withKeep((keep, kept) => {
       const section = generate("peek", keep, ["--hide", hidden, "--env", "FAKE_BWRAP_LOG"], { modelArgs: [join(hidden, "outcome.md")] });
       assert.equal(section.status, "generated");
-      assert.deepEqual(readFileSync(log, "utf8").split("\n").slice(0, 10), ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs"]);
+      const logged = readFileSync(log, "utf8").split("\n");
+      assert.deepEqual(logged.slice(logged.indexOf("--dev"), logged.indexOf("--remount-ro") + 2), ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", resolve(hidden), "--remount-ro", "/"]);
+      assert.ok(!logged.some((arg, i) => arg === "--ro-bind" && logged[i + 1] === "/"));
+      assert.ok(kept().command.includes("peek"));
+      assert.equal(kept().sandbox[0], fakeBwrap);
+      assert.ok(kept().env.includes("FAKE_BWRAP_LOG") && kept().env.includes("PATH"));
     });
     process.env.DECISION_MAP_BWRAP = join(hidden, "no-such-bwrap");
     withKeep((keep, kept) => {
@@ -249,7 +259,10 @@ test("--sandbox-env runs the CLI outside and hands it the same sandbox as a JSON
     withKeep((keep, kept) => {
       const section = generate("env", keep, ["--hide", hidden, "--writable", "/w", "--sandbox-env", "APP_SERVER_PREFIX"], { modelArgs: ["APP_SERVER_PREFIX"] });
       assert.equal(section.status, "generated");
-      assert.deepEqual(JSON.parse(kept().reply.value), ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--bind", "/w", "/w", "--tmpfs", hidden, "--unshare-pid", "--die-with-parent", "--"]);
+      const prefix = JSON.parse(kept().reply.value);
+      assert.deepEqual(prefix, ["bwrap", ...modelCommand({ cli: "x", cliArgs: [], hide: [hidden], writable: ["/w"] }).args.slice(0, -1)]);
+      assert.deepEqual(kept().sandbox, prefix);
+      assert.ok(kept().env.includes("APP_SERVER_PREFIX"));
     });
   } finally {
     rmSync(hidden, { recursive: true, force: true });
