@@ -1,6 +1,6 @@
 # Decision Multiverse — research roadmap
 
-**Status:** proposal; Phase 1 steps 1 and 2 are documented and steps 3 to 5 have a working prototype ([decision map](DECISION_MAP.md)), demonstrated on one real run in step 6; later phases are not started and no research results are established. **Home:** Elsewhere research documentation, not a claim about the existing Development Cycle product.
+**Status:** Phase 1 is complete: steps 1 and 2 are documented, steps 3 to 5 have a working prototype ([decision map](DECISION_MAP.md)) demonstrated on one real run in step 6, and the map is now written at the end of every Development Cycle run. Phase 2 is in progress. Phases 3 and 4 are not started, and no research results are established. **Home:** Elsewhere research documentation, not a claim about the existing Development Cycle product.
 
 ## Vision
 
@@ -17,6 +17,8 @@ Every later comparison is against linear execution, so the linear cycle must fir
 - each run's evidence is complete: approved plan, delivery, mechanical validation and final decision;
 - duration, cost and interventions are recorded per run, so they can serve as the comparison baseline.
 
+**Status (2026-10-26):** the owner accepted the current baseline, round 8kv859, as sufficient to proceed. That run reached a recorded decision on its own, but its corrections failed and its delivery was partial, and the reliability baseline's repeated-run criterion is not met. Comparisons in later phases must state this limit.
+
 These runs are also the first evaluation data for Phase 1. Runs from unrelated projects are not used as evidence. Because the baseline task is private, Phase 1 reads its runs locally and publishes only sanitized examples.
 
 ## Phase 1 — decision provenance and post-run map (implementation target)
@@ -26,7 +28,8 @@ These runs are also the first evaluation data for Phase 1. Runs from unrelated p
 3. Extract consequential decisions from an existing finished run **read-only**, using observed evidence. Avoid logging every token or arbitrary implementation step. Include explicit 'unknown' when alternatives or rationale cannot be reconstructed. Prototype: [`decision-map/extract.mjs`](../decision-map/extract.mjs).
 4. Produce a small portable JSON schema and readable visual map (Mermaid or static HTML). Progressive disclosure: one-line summaries first; show source, evidence, pros/cons and uncertainty on selection. Distinguish chosen/executed/validated, unexecuted hypotheses, and unknowns. Prototype: [`decision-map/render.mjs`](../decision-map/render.mjs), static HTML.
 5. Support a configurable relevance filter based on impact, reversibility, cost and uncertainty, without hard-coded option types or branch counts. Preserve the original record and provenance. Prototype: [`decision-map/filter.mjs`](../decision-map/filter.mjs).
-6. Demonstrate with one sanitized, realistic example run. Do not read production state into the public repository or embed deployment-specific values. The only exception is the reviewed example described in the [publication checklist](../PUBLICATION.md): [baseline round 8kv859](../examples/baseline-round-8kv859/README.md), the decision records of one finished run, published with the owner's consent. It is a failure-path example (its corrections failed and its delivery was partial); the Phase 0 reliability baseline is still unmet.
+6. Demonstrate with one sanitized, realistic example run. Do not read production state into the public repository or embed deployment-specific values. The only exception is the reviewed example described in the [publication checklist](../PUBLICATION.md): [baseline round 8kv859](../examples/baseline-round-8kv859/README.md), the decision records of one finished run, published with the owner's consent. It is a failure-path example: its corrections failed and its delivery was partial.
+7. Write the map at the end of every run. The Development Cycle runs an optional command when a run closes, and [`decision-map/map-run.mjs`](../decision-map/map-run.mjs) writes `decision-map/decisions.jsonl` and `map.html` into the run directory. This runs only on the operator's machine, and nothing from it reaches this repository.
 
 **Out of scope for Phase 1:** live branching, automatic replay, unconstrained parallel execution, predicted outcomes stated as facts, hidden chain-of-thought extraction, production-runtime changes, new agent runs.
 
@@ -42,9 +45,18 @@ These runs are also the first evaluation data for Phase 1. Runs from unrelated p
 - Generated public examples are portable and pass the repository's public-sanitization audit.
 - No tautological checks, change-detector tests or regression tests without a genuine behavior gap.
 
-## Future experimental phases (not implemented)
+## Phase 2 — contextual alternatives (in progress)
 
-**Phase 2 — contextual alternatives:** construct short, non-prescriptive counterfactual descriptions, uncertainty and potential consequences, with source-grounded assumptions.
+Goal: for a consequential decision, describe what else could reasonably have been done, grounded in what the run actually knew at that point. Each alternative is a short, non-prescriptive description, with its assumptions, uncertainty and potential consequences. Nothing in this phase executes an alternative.
+
+1. Extend the decision record additively with a `generated` classification for alternatives. A generated alternative carries: a summary; assumptions, each either linked to a source artifact pointer that existed before the decision or marked as an assumption without evidence; potential consequences, always hypothesized; uncertainty; and the generator that produced it. Observed, agent-stated and generated alternatives stay distinguishable in every record.
+2. Build a read-only generator that takes one finished run's decision records and the artifacts they point to, and proposes zero or more alternatives per decision through a pluggable command, so no model or provider is fixed. It only sees information from before the decision. An assumption that cites a missing or later artifact is dropped, and so is an alternative with no grounded assumption.
+3. Show generated alternatives in the map as hypotheses: visibly different from observed and agent-stated ones, with their assumptions and evidence links on selection.
+4. Evaluate on the baseline run with criteria stated before looking at the output: the share of generated assumptions that are grounded, the share of decisions where the owner finds at least one alternative worth considering, and whether any alternative would have changed a decision or located a failure cause sooner. Report null results.
+
+**Out of scope for Phase 2:** executing or replaying alternatives, predicting outcomes as facts, fixed option types or branch counts, ranking alternatives as better or worse than the chosen option.
+
+## Future experimental phases (not implemented)
 
 **Phase 3 — isolated replay:** capture or reconstruct an *adequate* pre-decision checkpoint, branch in isolated worktrees/environments, hold evaluation criteria fixed, prevent future-information leakage, and compare actual outputs.
 
