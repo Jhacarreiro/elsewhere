@@ -12,6 +12,15 @@ if (mode === "slow") {
   const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
   writeFileSync(process.argv[3], String(child.pid));
   setTimeout(() => {}, 60000);
+} else if (mode === "stubborn") {
+  // Ignores the request to stop, so only a kill ends it.
+  process.on("SIGTERM", () => {});
+  setInterval(() => {}, 1000);
+} else if (mode === "flood") {
+  // Prints past the adapter's limit and never finishes.
+  const chunk = "x".repeat(1024 * 1024);
+  const write = () => process.stdout.write(chunk, write);
+  write();
 } else if (mode === "peek") {
   // Answers whether the file named next is visible, with no alternatives.
   process.stdout.write(JSON.stringify({ alternatives: [], seen: existsSync(process.argv[3]) }));

@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createReader } from "../decision-map/extract.mjs";
 import { generateAlternatives } from "../decision-map/generate.mjs";
-import { DEFAULT_MODEL_TIMEOUT_MS, modelCommand, modelDeadline, parseAnswer } from "../decision-map/prompt-command.mjs";
+import { DEFAULT_MODEL_TIMEOUT_MS, killGrace, modelCommand, modelDeadline, parseAnswer } from "../decision-map/prompt-command.mjs";
+import { spawnSync } from "node:child_process";
 import { DEFAULT_TIMEOUT_MS } from "../decision-map/generate.mjs";
 
 const adapter = new URL("../decision-map/prompt-command.mjs", import.meta.url).pathname;
@@ -67,6 +68,7 @@ test("the answer parser takes the alternatives object out of surrounding text", 
   assert.deepEqual(parseAnswer('Sure: {"alternatives": []} and {stray}'), { alternatives: [] });
   assert.equal(parseAnswer('{"other": 1}'), null);
   assert.equal(parseAnswer("no json"), null);
+  assert.deepEqual(parseAnswer('preface {not JSON}; answer {"alternatives": [{"summary": "a } in a string"}]} end'), { alternatives: [{ summary: "a } in a string" }] });
 });
 
 test("a model past its deadline is stopped and its exchange kept, inside the generator's own deadline", () => {
@@ -133,9 +135,9 @@ test("a timed-out model's whole process group is stopped, children included", ()
 
 test("--hide runs the CLI under bwrap with each directory as an empty tmpfs and its own /proc", () => {
   const hidden = mkdtempSync(join(tmpdir(), "prompt-hidden-"));
-  assert.deepEqual(modelCommand({ cli: "codex", cliArgs: ["exec", "-"], hide: [hidden] }), {
+  assert.deepEqual(modelCommand({ cli: "codex", cliArgs: ["exec", "-"], hide: [hidden], writable: ["/w"] }), {
     file: "bwrap",
-    args: ["--dev-bind", "/", "/", "--tmpfs", hidden, "--unshare-pid", "--proc", "/proc", "--die-with-parent", "--", "codex", "exec", "-"],
+    args: ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--bind", "/w", "/w", "--tmpfs", hidden, "--unshare-pid", "--die-with-parent", "--", "codex", "exec", "-"],
   });
   const log = join(hidden, "..", `${hidden.split("/").pop()}.bwrap-log`);
   const saved = { bwrap: process.env.DECISION_MAP_BWRAP, log: process.env.FAKE_BWRAP_LOG };
@@ -145,7 +147,7 @@ test("--hide runs the CLI under bwrap with each directory as an empty tmpfs and 
     withKeep((keep, kept) => {
       const section = generate("peek", keep, ["--hide", hidden], { modelArgs: [join(hidden, "outcome.md")] });
       assert.equal(section.status, "generated");
-      assert.deepEqual(readFileSync(log, "utf8").split("\n").slice(0, 8), ["--dev-bind", "/", "/", "--tmpfs", hidden, "--unshare-pid", "--proc", "/proc"]);
+      assert.deepEqual(readFileSync(log, "utf8").split("\n").slice(0, 10), ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs"]);
     });
     process.env.DECISION_MAP_BWRAP = join(hidden, "no-such-bwrap");
     withKeep((keep, kept) => {
@@ -160,5 +162,55 @@ test("--hide runs the CLI under bwrap with each directory as an empty tmpfs and 
     }
     rmSync(hidden, { recursive: true, force: true });
     rmSync(log, { force: true });
+  }
+});
+
+test("a model that ignores the stop request is killed inside a short generator deadline, and its exchange kept", () => {
+  assert.ok(modelDeadline(1500) + killGrace(1500) < 1500);
+  withKeep((keep, kept) => {
+    const section = generate("stubborn", keep, [], { timeoutMs: 1500 });
+    assert.equal(section.status, "withheld");
+    assert.equal(kept().exit, "SIGTERM");
+  });
+});
+
+test("a model printing past the limit is stopped and the decision withheld", () => {
+  withKeep((keep, kept) => {
+    const section = generate("flood", keep, [], { timeoutMs: 20000 });
+    assert.equal(section.status, "withheld");
+    assert.equal(kept().exit, "output_limit");
+  });
+});
+
+function probe(own, env = {}) {
+  const result = spawnSync(process.execPath, [adapter, ...own, "--probe"], { encoding: "utf8", env: { ...process.env, ...env } });
+  return { status: result.status, report: result.stdout ? JSON.parse(result.stdout) : null };
+}
+
+test("--probe reports a sandbox that does not hide as failed", () => {
+  const hidden = mkdtempSync(join(tmpdir(), "prompt-hidden-"));
+  try {
+    writeFileSync(join(hidden, "outcome.md"), "after the decision\n");
+    const { status, report } = probe(["--hide", hidden], { DECISION_MAP_BWRAP: fakeBwrap, FAKE_BWRAP_LOG: join(tmpdir(), `probe-${process.pid}.log`) });
+    assert.equal(status, 1);
+    assert.ok(report.found.includes(`hidden_not_empty ${hidden}`));
+  } finally {
+    rmSync(hidden, { recursive: true, force: true });
+    rmSync(join(tmpdir(), `probe-${process.pid}.log`), { force: true });
+  }
+});
+
+const hasBwrap = spawnSync("bwrap", ["--ro-bind", "/", "/", "true"]).status === 0;
+test("with real bwrap the probe finds hidden directories empty, the root read-only and the writable directory writable", { skip: !hasBwrap && "bwrap is not available here" }, () => {
+  const hidden = mkdtempSync(join(tmpdir(), "prompt-hidden-"));
+  const writable = mkdtempSync(join(tmpdir(), "prompt-writable-"));
+  try {
+    writeFileSync(join(hidden, "outcome.md"), "after the decision\n");
+    const { status, report } = probe(["--hide", hidden, "--writable", writable]);
+    assert.equal(status, 0, JSON.stringify(report));
+    assert.deepEqual(report.found, [`hidden_empty ${hidden}`, "root_read_only", `writable ${writable}`]);
+  } finally {
+    rmSync(hidden, { recursive: true, force: true });
+    rmSync(writable, { recursive: true, force: true });
   }
 });
