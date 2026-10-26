@@ -109,7 +109,7 @@ export function createReader({ runDir, adapterDir = null, maxBytes = MAX_ARTIFAC
     if (!cache.has(key)) {
       try {
         const f = readContained(pinned, rel, maxBytes);
-        cache.set(key, f && { text: f.buf.toString("utf8"), sha: sha256(f.buf), mtime: f.mtime, ctime: f.ctime });
+        cache.set(key, f && { text: f.buf.toString("utf8"), bytes: f.buf, sha: sha256(f.buf), mtime: f.mtime, ctime: f.ctime });
       } catch {
         cache.set(key, null);
       }
@@ -139,10 +139,23 @@ export function createReader({ runDir, adapterDir = null, maxBytes = MAX_ARTIFAC
     if (fd === null) return [];
     try { return readdirSync(fdPath(fd)); } catch { return []; } finally { closeSync(fd); }
   };
+  // Write and change times of one entry under the root, without reading it.
+  const stat = (root, rel) => {
+    const pinned = roots[root];
+    if (!pinned) return null;
+    const fd = openUnder(pinned, rel, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    if (fd === null) return null;
+    try {
+      const st = fstatSync(fd);
+      return { isFile: st.isFile(), mtime: st.mtime.toISOString(), ctime: st.ctime.toISOString() };
+    } finally {
+      closeSync(fd);
+    }
+  };
   const close = () => {
     for (const [name, r] of Object.entries(roots)) if (r && owned.has(name)) closeSync(r.fd);
   };
-  return { read, json, jsonl, list, close };
+  return { read, json, jsonl, list, stat, close };
 }
 
 function evidence(reader, root, rel, pointer = "", excerpt = "") {
