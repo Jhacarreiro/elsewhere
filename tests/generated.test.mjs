@@ -73,6 +73,19 @@ test("an unsupported assumption never carries evidence, so it cannot look ground
   assert.deepEqual(out.generated_alternatives.items[0].assumptions[1].evidence, []);
 });
 
+test("an assumption with a missing or unknown basis is never promoted to grounded", () => {
+  const { record: out, dropped } = applyGeneratedRules(record({
+    items: [
+      alternative("missing", [{ text: "No basis given", evidence: [proof()] }]),
+      alternative("typo", [{ text: "Mistyped basis", basis: "Grounded", evidence: [proof()] }]),
+      alternative("kept", [{ text: "Grounded", basis: "grounded", evidence: [proof()] }, { text: "Odd", basis: "maybe", evidence: [proof()] }]),
+    ],
+  }));
+  assert.deepEqual(out.generated_alternatives.items.map((i) => i.option_id), ["kept"]);
+  assert.equal(out.generated_alternatives.items[0].assumptions.length, 1);
+  assert.deepEqual(dropped.map((d) => d.option_id), ["missing", "typo"]);
+});
+
 test("without a decision time nothing is generated, even if the generator supplied a boundary", () => {
   const { record: out, dropped } = applyGeneratedRules({
     ...record({ items: [alternative("a", [{ text: "Grounded", basis: "grounded", evidence: [proof()] }])] }),

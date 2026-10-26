@@ -62,8 +62,10 @@ export function applyGeneratedRules(record) {
         assumptions.push({ ...a, evidence: [] });
         continue;
       }
+      // Any basis other than the two the record defines is not a claim of grounding.
+      if (a.basis !== "grounded") continue;
       const evidence = (a.evidence || []).filter(usable);
-      if (evidence.length) assumptions.push({ ...a, basis: "grounded", evidence });
+      if (evidence.length) assumptions.push({ ...a, evidence });
     }
     if (!assumptions.some((a) => a.basis === "grounded")) {
       dropped.push({ option_id: item.option_id ?? null, summary: item.summary, reason: "no grounded assumption" });
