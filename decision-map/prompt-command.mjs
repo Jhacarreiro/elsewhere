@@ -2,7 +2,7 @@
 // model CLI that reads a prompt on stdin and prints its answer on stdout, and turns the answer back
 // into the JSON reply generate.mjs expects. Which CLI and model is the operator's choice.
 //
-//   node decision-map/generate.mjs <run-dir> -- node decision-map/prompt-command.mjs [--keep <dir>] [--hide <dir>]... [--writable <dir>]... [--sandbox-env <NAME>] -- <cli> [args...]
+//   node decision-map/generate.mjs <run-dir> -- node decision-map/prompt-command.mjs [--keep <dir>] [--hide <dir>]... [--writable <dir>]... [--sandbox-env <NAME>] [--env <NAME>]... -- <cli> [args...]
 //   node decision-map/prompt-command.mjs --hide <dir>... [--writable <dir>]... --probe
 //
 // With --keep, every exchange is written to <dir>/<decision id>.json (request, raw answer, parsed
@@ -25,6 +25,10 @@
 // --probe runs a shell in that same sandbox instead of a model and prints what it found: each hidden
 // directory empty, the root not writable, each writable directory writable. It exits nonzero if any
 // of that fails, so the result can be recorded as proof before a run.
+//
+// The model gets only an allowlisted environment: MODEL_ENV below, plus each variable named with
+// --env (its login or provider settings, say). Nothing else of this command's environment reaches it,
+// so credentials and run state kept in variables stay outside the input boundary like hidden files do.
 //
 // The model is stopped before generate.mjs's deadline (DECISION_MAP_GENERATOR_TIMEOUT_MS and
 // DECISION_MAP_GENERATOR_DEADLINE, or its default), so this command can keep the failed exchange instead of being killed with the model still
@@ -49,10 +53,19 @@ export function killGrace(generatorMs) {
 
 export const DEFAULT_MODEL_TIMEOUT_MS = modelDeadline(DEFAULT_TIMEOUT_MS);
 
+// Passed to the model by default; what it needs beyond these the operator names with --env.
+export const MODEL_ENV = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM", "TMPDIR"];
+
+export function modelEnv(names, from) {
+  const env = {};
+  for (const name of [...MODEL_ENV, ...names]) if (from[name] !== undefined) env[name] = from[name];
+  return env;
+}
+
 // The most the model may print; past it the model is stopped and the decision withheld.
 export const MAX_ANSWER_BYTES = 8 * 1024 * 1024;
 
-const USAGE = "Usage: node decision-map/prompt-command.mjs [--keep <dir>] [--hide <dir>]... [--writable <dir>]... [--sandbox-env <NAME>] [--timeout-seconds <n, capped below generate.mjs's deadline>] -- <cli> [args...]\n       node decision-map/prompt-command.mjs --hide <dir>... [--writable <dir>]... --probe";
+const USAGE = "Usage: node decision-map/prompt-command.mjs [--keep <dir>] [--hide <dir>]... [--writable <dir>]... [--sandbox-env <NAME>] [--env <NAME>]... [--timeout-seconds <n, capped below generate.mjs's deadline>] -- <cli> [args...]\n       node decision-map/prompt-command.mjs --hide <dir>... [--writable <dir>]... --probe";
 
 export function prompt(request) {
   const artifacts = request.artifacts.map((a) => [
@@ -133,12 +146,13 @@ function parseArgs(argv, env) {
   // comes out of the model's time and not out of the margin.
   const startedAt = Number(env.DECISION_MAP_GENERATOR_DEADLINE) > 0 ? Number(env.DECISION_MAP_GENERATOR_DEADLINE) - generatorMs : Date.now();
   const limit = Math.max(0, modelDeadline(generatorMs) - (Date.now() - startedAt));
-  const args = { cli: argv[split + 1], cliArgs: argv.slice(split + 2), timeoutMs: limit, graceMs: killGrace(generatorMs), hide: [], writable: [] };
+  const args = { cli: argv[split + 1], cliArgs: argv.slice(split + 2), timeoutMs: limit, graceMs: killGrace(generatorMs), hide: [], writable: [], env: [] };
   for (let i = 0; i < own.length; i += 1) {
     if (own[i] === "--keep" && i + 1 < own.length) args.keep = own[++i];
     else if (own[i] === "--hide" && i + 1 < own.length) args.hide.push(resolve(own[++i]));
     else if (own[i] === "--writable" && i + 1 < own.length) args.writable.push(resolve(own[++i]));
     else if (own[i] === "--sandbox-env" && /^[A-Z_][A-Z0-9_]*$/.test(own[i + 1] || "")) args.sandboxEnv = own[++i];
+    else if (own[i] === "--env" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(own[i + 1] || "")) args.env.push(own[++i]);
     else if (own[i] === "--timeout-seconds" && Number(own[i + 1]) > 0) args.timeoutMs = Math.min(Number(own[++i]) * 1000, limit);
     else throw new Error(`Unknown argument: ${own[i]}. ${USAGE}`);
   }
@@ -196,9 +210,10 @@ function killGroup(pid, signal) {
   }
 }
 
+// env is the whole environment the command gets.
 function run({ file, args, env }, input, timeoutMs, graceMs) {
   return new Promise((done) => {
-    const child = spawn(file, args, { stdio: ["pipe", "pipe", "pipe"], detached: true, env: { ...process.env, ...env } });
+    const child = spawn(file, args, { stdio: ["pipe", "pipe", "pipe"], detached: true, env });
     const decoder = new StringDecoder("utf8");
     let stdout = "";
     let bytes = 0;
@@ -247,13 +262,13 @@ if (isMain) {
       process.exit(2);
     }
     const sandbox = modelCommand(probeCommand(args), bwrap);
-    const result = await run(sandbox, "", args.timeoutMs, args.graceMs);
+    const result = await run({ ...sandbox, env: modelEnv([], process.env) }, "", args.timeoutMs, args.graceMs);
     process.stdout.write(`${JSON.stringify({ sandbox: [sandbox.file, ...sandbox.args.slice(0, sandbox.args.indexOf("--"))], exit: result.status ?? result.signal ?? String(result.error?.code || result.error), found: result.stdout.trim().split("\n").filter(Boolean) }, null, 2)}\n`);
     process.exit(result.status === 0 ? 0 : 1);
   }
   const request = JSON.parse(readFileSync(0, "utf8"));
   const command = args.sandboxEnv ? sandboxEnvCommand(args, bwrap) : modelCommand(args, bwrap);
-  const result = await run(command, prompt(request), args.timeoutMs, args.graceMs);
+  const result = await run({ ...command, env: { ...modelEnv(args.env, process.env), ...command.env } }, prompt(request), args.timeoutMs, args.graceMs);
   const answer = result.stdout;
   const reply = result.status === 0 ? parseAnswer(answer) : null;
   if (args.keep) {

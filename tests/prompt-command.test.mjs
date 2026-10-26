@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createReader } from "../decision-map/extract.mjs";
 import { generateAlternatives } from "../decision-map/generate.mjs";
-import { DEFAULT_MODEL_TIMEOUT_MS, killGrace, modelCommand, modelDeadline, parseAnswer } from "../decision-map/prompt-command.mjs";
+import { DEFAULT_MODEL_TIMEOUT_MS, killGrace, MODEL_ENV, modelCommand, modelDeadline, parseAnswer } from "../decision-map/prompt-command.mjs";
 import { spawnSync } from "node:child_process";
 import { DEFAULT_TIMEOUT_MS } from "../decision-map/generate.mjs";
 
@@ -150,7 +150,7 @@ test("--hide runs the CLI under bwrap with each directory as an empty tmpfs and 
     process.env.DECISION_MAP_BWRAP = fakeBwrap;
     process.env.FAKE_BWRAP_LOG = log;
     withKeep((keep, kept) => {
-      const section = generate("peek", keep, ["--hide", hidden], { modelArgs: [join(hidden, "outcome.md")] });
+      const section = generate("peek", keep, ["--hide", hidden, "--env", "FAKE_BWRAP_LOG"], { modelArgs: [join(hidden, "outcome.md")] });
       assert.equal(section.status, "generated");
       assert.deepEqual(readFileSync(log, "utf8").split("\n").slice(0, 10), ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs"]);
     });
@@ -185,6 +185,29 @@ test("a model printing past the limit is stopped and the decision withheld", () 
     assert.equal(section.status, "withheld");
     assert.equal(kept().exit, "output_limit");
   });
+});
+
+test("the model gets only the allowlisted environment and the variables named with --env", () => {
+  const saved = process.env.PROMPT_COMMAND_TEST_SECRET;
+  process.env.PROMPT_COMMAND_TEST_SECRET = "s3cret";
+  try {
+    assert.ok(!MODEL_ENV.includes("PROMPT_COMMAND_TEST_SECRET"));
+    withKeep((keep, kept) => {
+      generate("env", keep, [], { modelArgs: ["PROMPT_COMMAND_TEST_SECRET"] });
+      assert.equal(kept().reply.value, null);
+    });
+    withKeep((keep, kept) => {
+      generate("env", keep, [], { modelArgs: ["PATH"] });
+      assert.equal(kept().reply.value, process.env.PATH);
+    });
+    withKeep((keep, kept) => {
+      generate("env", keep, ["--env", "PROMPT_COMMAND_TEST_SECRET"], { modelArgs: ["PROMPT_COMMAND_TEST_SECRET"] });
+      assert.equal(kept().reply.value, "s3cret");
+    });
+  } finally {
+    if (saved === undefined) delete process.env.PROMPT_COMMAND_TEST_SECRET;
+    else process.env.PROMPT_COMMAND_TEST_SECRET = saved;
+  }
 });
 
 function probe(own, env = {}) {
