@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// Static, self-contained HTML map of decision records (Phase 1 step 4).
+// Static, self-contained HTML map of decision records (Phase 1 step 4, generated alternatives Phase 2 step 3).
 // One-line summaries first; source, evidence, alternatives and uncertainty on expansion.
 import { readFileSync, writeFileSync } from "node:fs";
 import { filterDecisions } from "./filter.mjs";
+import { applyGeneratedRules } from "./generated.mjs";
 
 const STAGES = ["planning", "plan_review", "implementation", "review", "correction", "final_validation", "delivery", "follow_up", "recovery", "other"];
 const STAGE_LABEL = {
@@ -33,17 +34,42 @@ function alternatives(record) {
   return `<h4>Alternatives (${a.items.length})</h4><ul class="alts">${items}</ul>`;
 }
 
+// Generated alternatives are proposed after the run, so they get their own block and colour, never
+// the run's own "Alternatives" list. Each one opens to its assumptions and their evidence.
+function generated(record) {
+  const g = record.generated_alternatives;
+  if (!g) return "";
+  const by = g.generator ? ` <span class="muted">by ${esc(g.generator.name)} ${esc(g.generator.version)}${g.generator.command ? ` (${esc(g.generator.command)})` : ""}</span>` : "";
+  if (g.status === "withheld") return `<p class="muted">Generated alternatives: withheld. ${esc(g.reason)}</p>`;
+  if (!g.items.length) return `<p class="muted">Generated alternatives: the generator proposed none.${by}</p>`;
+  const items = g.items.map((item) => {
+    const assumptions = item.assumptions.map((a) => `<li>${badge("basis", a.basis, a.basis === "grounded" ? "Grounded before the decision" : "Unsupported")} ${esc(a.text)}
+        ${a.evidence.length ? `<ul class="evidence">${a.evidence.map((e) => `<li><code>${esc(e.root)}:${esc(e.pointer)}</code> <span class="muted">${esc(e.version_proof)} · sha256 ${esc(e.sha256.slice(0, 12))}…</span>${e.excerpt ? `<blockquote>${esc(e.excerpt)}</blockquote>` : ""}</li>`).join("")}</ul>` : ""}</li>`).join("");
+    const unc = item.uncertainty || { level: "unknown" };
+    return `<li><details class="gen">
+        <summary>${esc(item.summary)} ${badge("gen", "generated", "Generated hypothesis")}</summary>
+        <h4>Assumptions</h4><ul>${assumptions}</ul>
+        ${item.potential_consequences?.length ? `<div class="con">Potential consequences (hypothesized): ${esc(item.potential_consequences.join("; "))}</div>` : ""}
+        <p class="muted">Uncertainty: ${esc(unc.level)}${unc.note ? ` (${esc(unc.note)})` : ""} · Not executed</p>
+      </details></li>`;
+  }).join("");
+  return `<div class="generated"><h4>Generated alternatives (${g.items.length})${by}</h4>
+    <p class="muted">Proposed after the run from artifacts that existed before ${esc(g.boundary?.value ?? "the decision")}. Not ranked, not run, not predictions.</p>
+    <ul class="alts">${items}</ul></div>`;
+}
+
 function decision(record) {
   const c = record.chosen;
   const instant = record.time?.value ? new Date(record.time.value) : null;
   const when = instant && !Number.isNaN(instant.getTime()) ? `${instant.toISOString().replace("T", " ").slice(0, 16)}Z` : "time unknown";
   const who = [record.decided_by?.kind, record.decided_by?.role].filter(Boolean).join(" · ");
   const altCount = record.alternatives?.status === "listed" ? record.alternatives.items.length : null;
+  const genCount = record.generated_alternatives?.status === "generated" ? record.generated_alternatives.items.length : 0;
   const summary = `<summary>
       <span class="when">${esc(when)}</span>
       ${badge("state", record.state, STATE_LABEL[record.state])}
       <span class="q">${esc(record.question)}</span>
-      <span class="meta">${esc(who)}${altCount != null ? ` · ${altCount} alternative${altCount === 1 ? "" : "s"}` : ""}</span>
+      <span class="meta">${esc(who)}${altCount != null ? ` · ${altCount} alternative${altCount === 1 ? "" : "s"}` : ""}${genCount ? ` · ${genCount} generated` : ""}</span>
     </summary>`;
   const chosen = c
     ? `<div class="claim"><h4>Chosen ${badge("cls", c.classification, CLASS_LABEL[c.classification])}</h4><p>${esc(c.summary)}</p>
@@ -58,6 +84,7 @@ function decision(record) {
     <div class="body">
       ${chosen}
       ${alternatives(record)}
+      ${generated(record)}
       ${claim("Rationale", record.rationale) || `<p class="muted">Rationale: none recorded.</p>`}
       <p class="muted">Uncertainty: ${esc(unc.level)}${unc.note ? ` (${esc(unc.note)})` : ""} · Impact: ${esc(rel.impact ?? "unknown")} · Reversibility: ${esc(rel.reversibility ?? "unknown")} · Cost: ${esc(rel.cost ?? "unknown")}</p>
       <p class="muted">Record: ${badge("cls", record.classification, CLASS_LABEL[record.classification])} <code>${esc(record.id)}</code> · time source ${esc(record.time?.source ?? "unknown")}</p>
@@ -66,7 +93,10 @@ function decision(record) {
   </details>`;
 }
 
-export function renderMap(records, { title = "Decision map", filter = {} } = {}) {
+export function renderMap(input, { title = "Decision map", filter = {} } = {}) {
+  // The grounding rules are applied again here, so a records file edited by hand cannot show an
+  // ungrounded or unexecuted-looking alternative as generated and grounded.
+  const records = input.map((r) => applyGeneratedRules(r).record);
   const { shown, hidden, criteria } = filterDecisions(records, filter);
   const runs = [...new Set(records.map((r) => r.run?.run_id).filter(Boolean))];
   const counts = (list, key) => list.reduce((m, r) => ((m[r[key]] = (m[r[key]] || 0) + 1), m), {});
@@ -84,8 +114,8 @@ export function renderMap(records, { title = "Decision map", filter = {} } = {})
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}</title>
 <style>
-:root { --bg:#fbfaf7; --fg:#1d1d1b; --muted:#6b6a64; --card:#ffffff; --line:#e4e1d8; --obs:#1f6f43; --agent:#8a5a00; --inf:#6b3fa0; --pend:#b3261e; --hyp:#3a5a8c; }
-@media (prefers-color-scheme: dark) { :root { --bg:#161614; --fg:#ecebe6; --muted:#a3a29b; --card:#1f1f1c; --line:#33322e; --obs:#6fcf97; --agent:#f2c94c; --inf:#bb9af7; --pend:#ff8a80; --hyp:#8ab4f8; } }
+:root { --bg:#fbfaf7; --fg:#1d1d1b; --muted:#6b6a64; --card:#ffffff; --line:#e4e1d8; --obs:#1f6f43; --agent:#8a5a00; --inf:#6b3fa0; --pend:#b3261e; --hyp:#3a5a8c; --gen:#9a3b6b; }
+@media (prefers-color-scheme: dark) { :root { --bg:#161614; --fg:#ecebe6; --muted:#a3a29b; --card:#1f1f1c; --line:#33322e; --obs:#6fcf97; --agent:#f2c94c; --inf:#bb9af7; --pend:#ff8a80; --hyp:#8ab4f8; --gen:#f48fb1; } }
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
 main { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; }
@@ -102,6 +132,9 @@ summary .q { flex: 1 1 320px; } summary .meta { color: var(--muted); font-size: 
 .cls-observed { color: var(--obs); } .cls-agent-stated { color: var(--agent); } .cls-post-hoc-inferred { color: var(--inf); }
 .state-pending, .state-not_completed { color: var(--pend); } .state-decided { color: var(--obs); } .state-unknown, .state-superseded { color: var(--muted); }
 .hyp-no { color: var(--hyp); }
+.gen-generated, .basis-grounded { color: var(--gen); } .basis-unsupported { color: var(--muted); }
+.generated { border-left: 3px dashed var(--gen); padding-left: 10px; margin: 10px 0; }
+details.gen > summary { padding: 2px 0; display: block; }
 ul.alts, ul.evidence { padding-left: 18px; } ul.alts li { margin: 6px 0; } .pro, .con { font-size: .88rem; color: var(--muted); }
 blockquote { margin: 4px 0; padding-left: 10px; border-left: 3px solid var(--line); color: var(--muted); font-size: .85rem; }
 code { font-size: .82rem; }
@@ -117,7 +150,8 @@ code { font-size: .82rem; }
     ${badge("cls", "observed", "Observed")} recorded as a fact by the run ·
     ${badge("cls", "agent-stated", "Agent-stated")} an agent wrote it ·
     ${badge("cls", "post-hoc-inferred", "Inferred after the run")} ·
-    ${badge("hyp", "no", "Hypothesis, not executed")} an alternative nobody ran.
+    ${badge("hyp", "no", "Hypothesis, not executed")} an alternative nobody ran ·
+    ${badge("gen", "generated", "Generated hypothesis")} proposed after the run, from pre-decision artifacts only.
     "Alternatives: unknown" means the source does not say, not that there were none.
   </div>
   ${sections || `<p class="muted">No decisions to show.</p>`}

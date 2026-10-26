@@ -1,4 +1,4 @@
-# Decision map (Phase 1 steps 3 to 7, Phase 2 step 2)
+# Decision map (Phase 1 steps 3 to 7, Phase 2 steps 2 and 3)
 
 **Status:** working prototype. It reads finished runs and draws their decisions. Extraction never changes a run; `map-run.mjs` only adds its own `decision-map/` folder to the run it maps. Nothing changes a runner or runtime.
 
@@ -7,7 +7,7 @@ Small, dependency-free Node modules in [`decision-map/`](../decision-map):
 | Module | Step | What it does |
 | --- | --- | --- |
 | `extract.mjs` | 3 | Reads a Development Cycle run directory (and optionally the Octopus adapter home) and writes [decision record v0](DECISION_RECORD.md) lines. Read-only. |
-| `render.mjs` | 4 | Turns decision records into one self-contained HTML page: one line per decision, details on expansion. |
+| `render.mjs` | 4 | Turns decision records into one self-contained HTML page: one line per decision, details on expansion. Shows generated alternatives as hypotheses (Phase 2 step 3). |
 | `filter.mjs` | 5 | Selects which records the map shows, by impact, uncertainty, cost and reversibility. Records are never changed or dropped from the source. |
 | `map-run.mjs` | - | Extracts and renders one run and keeps the result in that run's `decision-map/` folder, for use at the end of every run. |
 | `generate.mjs` | Phase 2, 2 | Proposes generated alternatives per decision through a configured command, from pre-decision artifacts only. Read-only. See [generated alternatives](#generated-alternatives). |
@@ -38,6 +38,7 @@ It reads the records from the same open run directory it writes into. The new fi
 - **What makes it withhold.** A decision with no time, or with no file that passes that check, gets a `withheld` section with the reason, and the command is not called. A command that fails, times out or replies with invalid JSON also withholds, with the reason.
 - **The command.** No model or provider is fixed. The command after `--` gets one JSON request on stdin: the decision's question, stage and time, and the allowed artifacts with refs. It never gets the chosen option, its outcome or the extractor's list of alternatives, because the extractor summarises those from artifacts that may be written after the decision (an attempt's summary carries its final status); what the run knew reaches the command only through the pre-decision artifacts. It answers with `{"alternatives": [...]}` on stdout, each with a summary, assumptions, potential consequences and uncertainty. A grounded assumption cites an artifact ref and a verbatim quote. A citation counts only if the ref was given and the quote is in what the command was shown. Hash and version proof come from the reader, never from the reply. An assumption whose citations all fail is dropped, not kept as a guess. The [generated rules](DECISION_RECORD.md#generated-alternatives-phase-2) then drop any alternative left without a grounded assumption.
 - **What leaves the machine.** The request contains the allowed artifacts' text. If the command calls a hosted model, that text goes to its provider, so the operator chooses the command with that in mind.
+- **In the map.** `render.mjs --in generated.jsonl` shows them in their own dashed block and colour, labelled "Generated hypothesis", apart from the run's own alternatives. Each one opens to its assumptions (grounded or unsupported), the evidence pointer, version proof and quoted excerpt, its hypothesized consequences and its uncertainty. A withheld section shows its reason. The renderer applies the grounding rules again, so an edited records file cannot show an ungrounded alternative. `map-run.mjs` does not call a generator: generating needs a configured command, and possibly a model, so it stays a separate step.
 - **Trust in times.** The check trusts the file system's times on the machine that ran the cycle. A run directory copied elsewhere has new change times, so everything in it is withheld; that is the intended result, not an error.
 
 ## What is extracted
