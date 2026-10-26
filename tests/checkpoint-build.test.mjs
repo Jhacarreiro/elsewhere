@@ -196,3 +196,10 @@ test("a working-tree change without a base commit is never taken as complete", a
   const { record } = build(f, s);
   assert.deepEqual(record.adequacy.failed.map((x) => x.reason), ["incomplete: no base commit to check it against"]);
 });
+
+test("a file input from the repository root is refused, since its commit already captures it", async () => {
+  const f = await fixture();
+  const s = spec(f);
+  s.inputs.push({ role: "plan", root: "repository", path: "a.txt" });
+  assert.throws(() => build(f, s), /file inputs must be rooted at run or adapter/);
+});

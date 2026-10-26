@@ -119,6 +119,13 @@ export function buildCheckpoint({ spec, reader, repository }) {
   if (!DECISION_ID.test(spec.decision_id || "")) throw new Error("spec.decision_id must be a decision record id");
   if (!spec.run?.run_id || !spec.stage) throw new Error("spec.run.run_id and spec.stage are required");
   if (!TIME_SOURCES.has(spec.at?.source)) throw new Error("spec.at.source must be a decision record time source");
+  // Repository content is captured by its commit, so a file input from the repository root would only
+  // duplicate it; and the reader pins the run and adapter roots alone.
+  for (const s of spec.inputs || []) {
+    if (s.role !== "repository_commit" && s.root !== "run" && s.root !== "adapter") {
+      throw new Error(`input ${s.path ?? "(no path)"}: file inputs must be rooted at run or adapter; repository content comes from a repository_commit input`);
+    }
+  }
   const at = instant(spec.at?.value);
   const inputs = [];
   const copies = [];
