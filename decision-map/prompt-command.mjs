@@ -203,6 +203,8 @@ function parseArgs(argv, env) {
   if ((args.readable.length || args.writable.length || args.sandboxEnv || args.canary || args.allow.length) && !args.hide.length) throw new Error(`--readable, --writable, --sandbox-env, --allow-host and --canary only apply with --hide. ${USAGE}`);
   if ((args.deny.length || args.proxyLog) && !args.allow.length) throw new Error(`--deny-host and --proxy-log only apply with --allow-host. ${USAGE}`);
   if (args.allow.length && !args.deny.length) args.deny.push("github.com");
+  // The forwarder is shown like any readable path, so a hidden directory it sits in may show its mount point.
+  if (args.allow.length) args.readable.push(NET_ALLOW);
   return args;
 }
 
@@ -214,7 +216,7 @@ export function modelCommand({ cli, cliArgs, hide, readable = [], writable = [],
   if (!hide.length) return { file: cli, args: cliArgs };
   const home = writable[0] || "/tmp";
   const net = network ? {
-    mounts: [dirname(network.socket), NET_ALLOW].flatMap((path) => ["--ro-bind", path, path]),
+    mounts: [dirname(network.socket), ...(readable.includes(NET_ALLOW) ? [] : [NET_ALLOW])].flatMap((path) => ["--ro-bind", path, path]),
     env: Object.entries(proxyEnv(SANDBOX_PROXY_PORT)).flatMap(([name, value]) => ["--setenv", name, value]),
     wrap: [node, NET_ALLOW, "--forward", network.socket, "--port", String(SANDBOX_PROXY_PORT), "--"],
   } : { mounts: [], env: [], wrap: [] };
