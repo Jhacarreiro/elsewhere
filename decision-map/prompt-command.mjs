@@ -20,8 +20,8 @@
 // directory empty, the root not writable, each writable directory writable. It exits nonzero if any
 // of that fails, so the result can be recorded as proof before a run.
 //
-// The model is stopped before generate.mjs's deadline (DECISION_MAP_GENERATOR_TIMEOUT_MS, or its
-// default), so this command can keep the failed exchange instead of being killed with the model still
+// The model is stopped before generate.mjs's deadline (DECISION_MAP_GENERATOR_TIMEOUT_MS and
+// DECISION_MAP_GENERATOR_DEADLINE, or its default), so this command can keep the failed exchange instead of being killed with the model still
 // running and nothing kept. The model runs in its own process group, and the whole group is stopped,
 // so a CLI that forks the real model leaves nothing running into the next decision.
 import { spawn } from "node:child_process";
@@ -118,7 +118,10 @@ function parseArgs(argv, env) {
   if (split === -1 || split === argv.length - 1) throw new Error(`Missing model command after --. ${USAGE}`);
   const own = argv.slice(0, split);
   const generatorMs = Number(env.DECISION_MAP_GENERATOR_TIMEOUT_MS) > 0 ? Number(env.DECISION_MAP_GENERATOR_TIMEOUT_MS) : DEFAULT_TIMEOUT_MS;
-  const limit = modelDeadline(generatorMs);
+  // Counted from when the generator started this command, if it says, so this command's own start-up
+  // comes out of the model's time and not out of the margin.
+  const startedAt = Number(env.DECISION_MAP_GENERATOR_DEADLINE) > 0 ? Number(env.DECISION_MAP_GENERATOR_DEADLINE) - generatorMs : Date.now();
+  const limit = Math.max(0, modelDeadline(generatorMs) - (Date.now() - startedAt));
   const args = { cli: argv[split + 1], cliArgs: argv.slice(split + 2), timeoutMs: limit, graceMs: killGrace(generatorMs), hide: [], writable: [] };
   for (let i = 0; i < own.length; i += 1) {
     if (own[i] === "--keep" && i + 1 < own.length) args.keep = own[++i];
@@ -156,9 +159,9 @@ while [ "$1" != -- ]; do
   shift
 done
 shift
-if : 2>/dev/null >/.prompt-command-probe; then echo "root_writable"; ok=1; else echo "root_read_only"; fi
+if touch /.prompt-command-probe 2>/dev/null; then rm -f /.prompt-command-probe; echo "root_writable"; ok=1; else echo "root_read_only"; fi
 for dir; do
-  if : 2>/dev/null >"$dir/.prompt-command-probe"; then rm -f "$dir/.prompt-command-probe"; echo "writable $dir"; else echo "not_writable $dir"; ok=1; fi
+  if touch "$dir/.prompt-command-probe" 2>/dev/null; then rm -f "$dir/.prompt-command-probe"; echo "writable $dir"; else echo "not_writable $dir"; ok=1; fi
 done
 exit $ok`;
 

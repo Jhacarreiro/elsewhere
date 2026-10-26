@@ -166,9 +166,9 @@ test("--hide runs the CLI under bwrap with each directory as an empty tmpfs and 
 });
 
 test("a model that ignores the stop request is killed inside a short generator deadline, and its exchange kept", () => {
-  assert.ok(modelDeadline(1500) + killGrace(1500) < 1500);
+  assert.ok(modelDeadline(3000) + killGrace(3000) < 3000);
   withKeep((keep, kept) => {
-    const section = generate("stubborn", keep, [], { timeoutMs: 1500 });
+    const section = generate("stubborn", keep, [], { timeoutMs: 3000 });
     assert.equal(section.status, "withheld");
     assert.equal(kept().exit, "SIGTERM");
   });
