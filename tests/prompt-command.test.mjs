@@ -5,11 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createReader } from "../decision-map/extract.mjs";
 import { generateAlternatives } from "../decision-map/generate.mjs";
-import { DEFAULT_MODEL_TIMEOUT_MS, parseAnswer } from "../decision-map/prompt-command.mjs";
+import { DEFAULT_MODEL_TIMEOUT_MS, modelCommand, modelDeadline, parseAnswer } from "../decision-map/prompt-command.mjs";
 import { DEFAULT_TIMEOUT_MS } from "../decision-map/generate.mjs";
 
 const adapter = new URL("../decision-map/prompt-command.mjs", import.meta.url).pathname;
 const model = new URL("./fixtures/generator/fake-model.mjs", import.meta.url).pathname;
+const fakeBwrap = new URL("./fixtures/generator/fake-bwrap.sh", import.meta.url).pathname;
 const decision = {
   schema_version: 0,
   id: "dec_0123456789abcdef",
@@ -22,14 +23,14 @@ const decision = {
   evidence: [{ artifact: "x", root: "run", pointer: "plan.md", sha256: "b".repeat(64) }],
 };
 
-function generate(mode, keep, own = []) {
+function generate(mode, keep, own = [], { timeoutMs, modelArgs = [] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "prompt-command-"));
   try {
     writeFileSync(join(dir, "plan.md"), "The plan needs the owner's approval first.\nMore text.\n");
     const reader = createReader({ runDir: dir });
     try {
-      const args = [adapter, ...(keep ? ["--keep", keep] : []), ...own, "--", process.execPath, model, mode];
-      return generateAlternatives({ records: [decision], reader, command: { file: process.execPath, args, label: "fake-model" } }).records[0].generated_alternatives;
+      const args = [adapter, ...(keep ? ["--keep", keep] : []), ...own, "--", process.execPath, model, mode, ...modelArgs];
+      return generateAlternatives({ records: [decision], reader, command: { file: process.execPath, args, label: "fake-model" }, ...(timeoutMs ? { timeoutMs } : {}) }).records[0].generated_alternatives;
     } finally {
       reader.close();
     }
@@ -79,5 +80,85 @@ test("a model past its deadline is stopped and its exchange kept, inside the gen
     assert.equal(kept.reply, null);
   } finally {
     rmSync(keep, { recursive: true, force: true });
+  }
+});
+
+// Gone, or a zombie waiting for whoever adopted it to reap it.
+function stopsWithin(pid, ms) {
+  for (const end = Date.now() + ms; Date.now() < end; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    try {
+      if (readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]?.startsWith("Z")) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+function withKeep(fn) {
+  const keep = mkdtempSync(join(tmpdir(), "prompt-keep-"));
+  try {
+    return fn(keep, () => JSON.parse(readFileSync(join(keep, `${decision.id}.json`), "utf8")));
+  } finally {
+    rmSync(keep, { recursive: true, force: true });
+  }
+}
+
+test("the model's deadline follows a shorter generator deadline, and a longer --timeout-seconds is capped to it", () => {
+  assert.equal(modelDeadline(300000), 270000);
+  assert.equal(modelDeadline(4000), 3600);
+  for (const own of [[], ["--timeout-seconds", "100"]]) {
+    withKeep((keep, kept) => {
+      const section = generate("slow", keep, own, { timeoutMs: 4000 });
+      assert.equal(section.status, "withheld");
+      assert.equal(kept().exit, "SIGTERM");
+    });
+  }
+});
+
+test("a timed-out model's whole process group is stopped, children included", () => {
+  withKeep((keep, kept) => {
+    const pidFile = join(keep, "child.pid");
+    generate("fork-slow", keep, ["--timeout-seconds", "1"], { modelArgs: [pidFile] });
+    assert.equal(kept().exit, "SIGTERM");
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    assert.ok(stopsWithin(pid, 3000), `child ${pid} still running`);
+  });
+});
+
+test("--hide runs the CLI under bwrap with each directory as an empty tmpfs and its own /proc", () => {
+  const hidden = mkdtempSync(join(tmpdir(), "prompt-hidden-"));
+  assert.deepEqual(modelCommand({ cli: "codex", cliArgs: ["exec", "-"], hide: [hidden] }), {
+    file: "bwrap",
+    args: ["--dev-bind", "/", "/", "--tmpfs", hidden, "--unshare-pid", "--proc", "/proc", "--die-with-parent", "--", "codex", "exec", "-"],
+  });
+  const log = join(hidden, "..", `${hidden.split("/").pop()}.bwrap-log`);
+  const saved = { bwrap: process.env.DECISION_MAP_BWRAP, log: process.env.FAKE_BWRAP_LOG };
+  try {
+    process.env.DECISION_MAP_BWRAP = fakeBwrap;
+    process.env.FAKE_BWRAP_LOG = log;
+    withKeep((keep, kept) => {
+      const section = generate("peek", keep, ["--hide", hidden], { modelArgs: [join(hidden, "outcome.md")] });
+      assert.equal(section.status, "generated");
+      assert.deepEqual(readFileSync(log, "utf8").split("\n").slice(0, 8), ["--dev-bind", "/", "/", "--tmpfs", hidden, "--unshare-pid", "--proc", "/proc"]);
+    });
+    process.env.DECISION_MAP_BWRAP = join(hidden, "no-such-bwrap");
+    withKeep((keep, kept) => {
+      const section = generate("peek", keep, ["--hide", hidden]);
+      assert.equal(section.status, "withheld");
+      assert.equal(kept().exit, "ENOENT");
+    });
+  } finally {
+    for (const [key, value] of [["DECISION_MAP_BWRAP", saved.bwrap], ["FAKE_BWRAP_LOG", saved.log]]) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(hidden, { recursive: true, force: true });
+    rmSync(log, { force: true });
   }
 });

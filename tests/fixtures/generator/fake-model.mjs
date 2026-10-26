@@ -1,11 +1,20 @@
 // Stand-in model CLI for tests: reads a plain-text prompt on stdin and answers in its mode.
-import { readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const mode = process.argv[2] || "fenced";
 const text = readFileSync(0, "utf8");
 if (mode === "fail") process.exit(4);
 if (mode === "slow") {
   setTimeout(() => process.stdout.write('{"alternatives": []}'), 60000);
+} else if (mode === "fork-slow") {
+  // A wrapper whose real model is a child: the child's pid goes to the file named next.
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
+  writeFileSync(process.argv[3], String(child.pid));
+  setTimeout(() => {}, 60000);
+} else if (mode === "peek") {
+  // Answers whether the file named next is visible, with no alternatives.
+  process.stdout.write(JSON.stringify({ alternatives: [], seen: existsSync(process.argv[3]) }));
 } else if (mode === "prose") {
   process.stdout.write("I would rather not answer in JSON.");
 } else {
