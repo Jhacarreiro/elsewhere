@@ -187,3 +187,12 @@ test("the bundle is readable only by its owner, even under a permissive umask", 
   for (const dir of [out, join(out, "inputs"), join(out, "inputs", "adapter", "results")]) assert.equal(statSync(dir).mode & 0o777, 0o700, dir);
   for (const file of [join(out, "checkpoint.json"), join(out, "inputs", "adapter", "results", "review-input.diff")]) assert.equal(statSync(file).mode & 0o777, 0o600, file);
 });
+
+test("a working-tree change without a base commit is never taken as complete", async () => {
+  const f = await fixture();
+  const s = spec(f);
+  const { diff_base, expect_stat, ...bare } = s.inputs[1];
+  s.inputs[1] = bare;
+  const { record } = build(f, s);
+  assert.deepEqual(record.adequacy.failed.map((x) => x.reason), ["incomplete: no base commit to check it against"]);
+});

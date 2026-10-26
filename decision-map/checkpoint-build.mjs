@@ -132,9 +132,12 @@ export function buildCheckpoint({ spec, reader, repository }) {
   for (const s of spec.inputs || []) {
     if (s.role === "repository_commit") continue;
     const { input, bytes } = fileInput(reader, s);
-    if (bytes && s.diff_base !== undefined) {
-      const base = commits.get(s.diff_base);
-      const problem = base ? diffCompleteness(repository, base, bytes, s.expect_stat) : "its base commit is not an input";
+    // A working-tree change is a diff against some commit; without that commit nothing about its
+    // completeness can be checked, so it is never taken as complete on its own.
+    if (bytes && (s.diff_base !== undefined || s.role === "working_tree_change")) {
+      const base = s.diff_base === undefined ? null : commits.get(s.diff_base);
+      const problem = s.diff_base === undefined ? "no base commit to check it against"
+        : base ? diffCompleteness(repository, base, bytes, s.expect_stat) : "its base commit is not an input";
       if (problem) Object.assign(input, { complete: false, incomplete_reason: problem });
     }
     inputs.push(input);
