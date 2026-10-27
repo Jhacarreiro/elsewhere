@@ -228,14 +228,19 @@ if (isMain) {
   process.on("exit", () => rmSync(socketDir, { recursive: true, force: true }));
   const network = { socket: join(socketDir, "proxy.sock") };
   const tunnelLog = join(dirs.logs, "tunnels.jsonl");
+  // Tunnels asked for, those refused at once, and admitted ones closed later for their TLS server name.
   let tunnels = 0;
   let refused = 0;
+  let closedAtTls = 0;
   const server = await startAllowProxy({
     socket: network.socket,
     allow: spec.allow,
     onTunnel: (entry) => {
-      tunnels += 1;
-      if (!entry.allowed) refused += 1;
+      if (entry.stage === "tls") closedAtTls += 1;
+      else {
+        tunnels += 1;
+        if (!entry.allowed) refused += 1;
+      }
       appendFileSync(tunnelLog, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
     },
   });
@@ -259,7 +264,7 @@ if (isMain) {
     const net = await runLogged({ ...modelCommand(check, bwrap), env: modelEnv([], process.env) }, dirs.logs, 60000, "probe-network-");
     const found = ["probe-files-", "probe-network-"].flatMap((name) => readFileSync(join(dirs.logs, `${name}stdout.log`), "utf8").split("\n")).filter(Boolean);
     const ok = files.status === 0 && net.status === 0;
-    writeFileSync(join(args.out, "probe.json"), `${JSON.stringify({ ...record, files_exit: files.status, network_exit: net.status, found, tunnels, refused, ok }, null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(join(args.out, "probe.json"), `${JSON.stringify({ ...record, files_exit: files.status, network_exit: net.status, found, tunnels, refused, closed_at_tls: closedAtTls, ok }, null, 2)}\n`, { mode: 0o600 });
     process.stdout.write(`${JSON.stringify({ ok, files_exit: files.status, network_exit: net.status, found }, null, 2)}\n`);
     process.exit(ok ? 0 : 1);
   }
@@ -271,7 +276,7 @@ if (isMain) {
   record.duration_ms = Date.parse(record.finished_at) - Date.parse(record.started_at);
   record.exit = result.error ? String(result.error.code || result.error) : result.status ?? result.signal;
   record.timed_out = result.timedOut;
-  record.tunnels = { asked: tunnels, refused, log: "logs/tunnels.jsonl" };
+  record.tunnels = { asked: tunnels, refused, closed_at_tls: closedAtTls, log: "logs/tunnels.jsonl" };
   writeFileSync(join(args.out, "replay.json"), `${JSON.stringify(record, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   process.stdout.write(`${JSON.stringify({ exit: record.exit, timed_out: record.timed_out, duration_ms: record.duration_ms, tunnels: record.tunnels }, null, 2)}\n`);
   process.exit(record.exit === 0 ? 0 : 1);

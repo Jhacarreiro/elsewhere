@@ -108,7 +108,7 @@ export function connectTarget(line) {
  * @param {string[]} options.allow hosts admitted (see hostAllowed)
  * @param {number[]} [options.ports] ports admitted, HTTPS by default
  * @param {(entry: object) => void} [options.onTunnel] told of each tunnel asked for: {at, host, port, allowed, reason?},
- *   and again when an admitted tunnel is closed because its TLS server name is not that host ({..., tls_name})
+ *   and again, with stage "tls", when an admitted tunnel is closed because its TLS server name is not that host ({..., tls_name})
  * @param {(port: number, host: string) => import("node:net").Socket} [options.connect] how to reach the host (tests)
  * @returns {Promise<import("node:net").Server>} the listening server
  */
@@ -154,7 +154,7 @@ export function startAllowProxy({ socket, allow, ports = ALLOWED_PORTS, onTunnel
           client.off("data", onHello);
           const name = found.status === "ok" ? found.name.toLowerCase().replace(/\.$/, "") : null;
           if (name !== target.host.toLowerCase().replace(/\.$/, "")) {
-            onTunnel({ at: new Date().toISOString(), host: target.host, port: target.port, allowed: false, reason: found.status === "ok" ? "tls_name_mismatch" : found.reason, ...(name ? { tls_name: name } : {}) });
+            onTunnel({ at: new Date().toISOString(), stage: "tls", host: target.host, port: target.port, allowed: false, reason: found.status === "ok" ? "tls_name_mismatch" : found.reason, ...(name ? { tls_name: name } : {}) });
             client.destroy();
             upstream.destroy();
             return true;

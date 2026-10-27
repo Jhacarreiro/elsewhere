@@ -145,6 +145,7 @@ test("an admitted tunnel whose ClientHello names another site, hides its name or
       // Nothing comes back from the echo server: the hello never reached it.
       assert.equal(await exchange(socket, connect, { send }), "HTTP/1.1 200 Connection Established\r\n\r\n");
     }
+    assert.ok(tunnels.filter((t) => !t.allowed).every((t) => t.stage === "tls") && tunnels.filter((t) => t.allowed).every((t) => t.stage === undefined));
     assert.deepEqual(tunnels.filter((t) => !t.allowed).map(({ reason, tls_name }) => [reason, tls_name]), [
       ["tls_name_mismatch", "attacker.example"],
       ["encrypted_client_hello", undefined],
