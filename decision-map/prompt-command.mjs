@@ -57,7 +57,7 @@
 // running and nothing kept. The model runs in its own process group, and the whole group is stopped,
 // so a CLI that forks the real model leaves nothing running into the next decision.
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -246,7 +246,9 @@ export function modelCommand({ cli, cliArgs, hide, readable = [], writable = [],
       "--setenv", "HOME", home,
       ...net.env,
       "--chdir", home,
-      "--unshare-pid", "--die-with-parent",
+      // Its own process, IPC and host-name namespaces: no signals to host processes, no System V
+      // queues, segments or semaphores shared with them or left behind after it.
+      "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--die-with-parent",
       ...(network ? ["--unshare-net"] : []),
       "--", ...net.wrap, cli, ...cliArgs,
     ],
@@ -260,9 +262,11 @@ export function mountedInside(dir, { readable = [], writable = [], hide = [], mo
   return [...new Set([...readable, ...writable, ...hide, ...mounts.map((m) => m.at)].filter((d) => d.startsWith(`${dir}/`)).map((d) => d.slice(dir.length + 1).split("/")[0]))];
 }
 
-// Run in the sandbox by --probe, with each hidden directory and the names that may show in it (one per
-// line), then "--", then the writable ones.
+// Run in the sandbox by --probe, with the host's IPC namespace, then each hidden directory and the
+// names that may show in it (one per line), then "--", then the writable ones.
 const PROBE = `ok=0
+if [ "$(readlink /proc/self/ns/ipc)" = "$1" ]; then echo "ipc_shared"; ok=1; else echo "ipc_private"; fi
+shift
 while [ "$1" != -- ]; do
   if [ -z "$2" ]; then left=$(ls -A "$1"); else left=$(ls -A "$1" | grep -vxF "$2"); fi
   if [ -z "$left" ]; then echo "hidden_empty $1"; else echo "hidden_not_empty $1"; ok=1; fi
@@ -288,11 +292,11 @@ export function sandboxEnvCommand(args, bwrap = "bwrap") {
 
 // Writable mounts are checked as writable where they are shown. A hidden directory that a mount
 // replaces outright shows that mount's contents, not the host's, so it is not checked for emptiness.
-export function probeCommand({ hide, readable, writable, network, mounts = [], home }) {
+export function probeCommand({ hide, readable, writable, network, mounts = [], home }, hostIpc = readlinkSync("/proc/self/ns/ipc")) {
   const shown = { readable, writable, hide, mounts };
   const checked = [...writable, ...mounts.filter((m) => m.writable).map((m) => m.at)];
   const empty = hide.filter((dir) => !mounts.some((m) => m.at === dir));
-  return { cli: "sh", cliArgs: ["-c", PROBE, "probe", ...empty.flatMap((dir) => [dir, mountedInside(dir, shown).join("\n")]), "--", ...checked], hide, readable, writable, network, mounts, home };
+  return { cli: "sh", cliArgs: ["-c", PROBE, "probe", hostIpc, ...empty.flatMap((dir) => [dir, mountedInside(dir, shown).join("\n")]), "--", ...checked], hide, readable, writable, network, mounts, home };
 }
 
 // The network half of the probe, run in the same sandbox behind the same forwarder.

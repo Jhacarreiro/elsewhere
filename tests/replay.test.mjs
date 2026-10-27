@@ -159,7 +159,7 @@ test("the stage's sandbox shows the replay's copies at the paths the run used, H
   // The probe checks the hidden directories for emptiness, except one a copy replaces outright, and
   // checks the writable copies where they are shown.
   const probeArgs = probeCommand(stageSandbox(spec, dirs, null)).cliArgs;
-  const probed = probeArgs.slice(3, probeArgs.indexOf("--"));
+  const probed = probeArgs.slice(4, probeArgs.indexOf("--"));
   assert.ok(probed.includes("/data/runs") && !probed.includes("/data/.adapter"), probed.join(" "));
   assert.deepEqual(probeArgs.slice(probeArgs.indexOf("--") + 1), ["/data/worktrees/example/integration", "/data/.adapter", "/data"]);
   assert.throws(() => readSpec(specFor({ allow_hosts: [] })), /network boundary/);
@@ -223,6 +223,11 @@ test("the probe allows every copy mounted below one hidden directory, and nothin
     assert.match(ok.stdout, new RegExp(`hidden_empty ${hidden}`), ok.stdout);
     mkdirSync(join(hidden, "later"));
     assert.match(run().stdout, new RegExp(`hidden_not_empty ${hidden}`));
+    // Run here, outside any sandbox, the probe shares this process's IPC namespace and fails for it.
+    assert.match(ok.stdout, /^ipc_shared$/m);
+    assert.notEqual(ok.status, 0);
+    const { cli, cliArgs } = probeCommand(sandbox, "ipc:[1]");
+    assert.match(spawnSync(cli, cliArgs, { encoding: "utf8" }).stdout, /^ipc_private$/m);
   } finally {
     rmSync(top, { recursive: true, force: true });
   }
