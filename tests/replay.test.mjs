@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { createReader } from "../decision-map/extract.mjs";
 import { buildCheckpoint, writeBundle } from "../decision-map/checkpoint-build.mjs";
 import { loadBundle, materialize, readSpec, stageSandbox } from "../decision-map/replay.mjs";
-import { modelCommand } from "../decision-map/prompt-command.mjs";
+import { modelCommand, probeCommand } from "../decision-map/prompt-command.mjs";
 
 const harness = new URL("../decision-map/replay.mjs", import.meta.url).pathname;
 const fakeBwrap = new URL("./fixtures/generator/fake-bwrap.sh", import.meta.url).pathname;
@@ -137,6 +137,12 @@ test("the stage's sandbox shows the replay's copies at the paths the run used, H
   assert.ok(home < hidden && hidden < copy, args.join(" "));
   assert.equal(args[args.indexOf("HOME") + 1], "/data");
   assert.ok(args.includes("--unshare-net"));
+  // The probe checks the hidden directories for emptiness, except one a copy replaces outright, and
+  // checks the writable copies where they are shown.
+  const probeArgs = probeCommand(stageSandbox(spec, dirs, null)).cliArgs;
+  const probed = probeArgs.slice(3, probeArgs.indexOf("--"));
+  assert.ok(probed.includes("/data/runs") && !probed.includes("/data/.adapter"), probed.join(" "));
+  assert.deepEqual(probeArgs.slice(probeArgs.indexOf("--") + 1), ["/data/worktrees/example/integration", "/data/.adapter", "/data"]);
   assert.throws(() => readSpec(specFor({ allow_hosts: [] })), /network boundary/);
   assert.throws(() => readSpec(specFor({ hide: [] })), /must hide/);
   assert.throws(() => readSpec(specFor({ mounts: [{ at: "relative", from: "run" }] })), /bad mount/);

@@ -283,11 +283,13 @@ export function sandboxEnvCommand(args, bwrap = "bwrap") {
   return { file: args.cli, args: args.cliArgs, env: { [args.sandboxEnv]: JSON.stringify(sandboxPrefix(args, bwrap)) } };
 }
 
-// Writable mounts are checked as writable where they are shown.
+// Writable mounts are checked as writable where they are shown. A hidden directory that a mount
+// replaces outright shows that mount's contents, not the host's, so it is not checked for emptiness.
 export function probeCommand({ hide, readable, writable, network, mounts = [], home }) {
   const shown = { readable, writable, hide, mounts };
   const checked = [...writable, ...mounts.filter((m) => m.writable).map((m) => m.at)];
-  return { cli: "sh", cliArgs: ["-c", PROBE, "probe", ...hide.flatMap((dir) => [dir, mountedInside(dir, shown).join("\n")]), "--", ...checked], hide, readable, writable, network, mounts, home };
+  const empty = hide.filter((dir) => !mounts.some((m) => m.at === dir));
+  return { cli: "sh", cliArgs: ["-c", PROBE, "probe", ...empty.flatMap((dir) => [dir, mountedInside(dir, shown).join("\n")]), "--", ...checked], hide, readable, writable, network, mounts, home };
 }
 
 // The network half of the probe, run in the same sandbox behind the same forwarder.
