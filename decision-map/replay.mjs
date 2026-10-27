@@ -21,7 +21,7 @@
 //   { "command": [argv...], "env": { recorded variables }, "pass_env": [names taken from here],
 //     "home": "/path", "mounts": [{ "at": "/path", "from": "worktree|run|adapter|home", "writable": bool }],
 //     "hide": [...], "readable": [...], "allow_hosts": [...], "timeout_seconds": n,
-//     "max_output_bytes": n, "max_write_bytes": n, "min_free_bytes": n,
+//     "max_output_bytes": n, "max_write_bytes": n, "min_free_bytes": n, "max_files": n,
 //     "limits": { "pids": n, "memory_bytes": n, "cpus": n }, "known_differences": [{ "subject", "recorded", "replay", "note" }] }
 //
 // A branch is the checkpoint plus one recorded change (--change): { "root": "run|adapter",
@@ -80,12 +80,12 @@ export function loadBundle(dir) {
 // system and global configuration or any GIT_ variables: a filter, hook or credential helper named
 // there (Git LFS, say) would otherwise act on what the checkpoint's commit asks for, with the host's
 // network. A checkout then writes the files as they are in the commit.
-function git(args, cwd) {
+function git(args, cwd, { raw = false } = {}) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
   Object.assign(env, { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1", GIT_LFS_SKIP_SMUDGE: "1", GIT_TERMINAL_PROMPT: "0" });
   const result = spawnSync("git", args, { cwd, encoding: "utf8", env });
   if (result.status !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr.trim()}`);
-  return result.stdout.trim();
+  return raw ? result.stdout : result.stdout.trim();
 }
 
 function applyChange(dirs, change) {
@@ -112,7 +112,21 @@ function applyChange(dirs, change) {
  * Lays out a fresh copy of the checkpoint under out. The repository is only read from.
  * @returns {{dirs: object, change: object|null}}
  */
-export function materialize({ bundle, repository, out, roots = [], change = null }) {
+// The checkout runs on the host before the stage's disk watch or cgroup exist, so its size is checked
+// first, from the commit's tree: a commit whose files would take more than maxWriteBytes, number more
+// than maxFiles, or leave less than minFreeBytes free is refused before anything is written.
+export const DEFAULT_MAX_FILES = 1_000_000;
+
+function checkoutFits(worktree, commit, out, { maxWriteBytes, minFreeBytes, maxFiles, free = freeBytes }) {
+  const listing = git(["ls-tree", "-r", "-l", "-z", commit], worktree, { raw: true }).split("\0").filter(Boolean);
+  const bytes = listing.reduce((sum, entry) => sum + (Number(entry.split(/\s+/)[3]) || 0), 0);
+  if (listing.length > maxFiles) throw new Error(`the checkpoint's commit has ${listing.length} files, more than the limit of ${maxFiles}`);
+  if (bytes > maxWriteBytes) throw new Error(`the checkpoint's commit holds ${bytes} bytes of files, more than the limit of ${maxWriteBytes}`);
+  if (free(out) - bytes < minFreeBytes) throw new Error(`checking out the checkpoint's commit (${bytes} bytes) would leave less than ${minFreeBytes} bytes free`);
+}
+
+export function materialize({ bundle, repository, out, roots = [], change = null, disk = {} }) {
+  const limits = { maxWriteBytes: DEFAULT_MAX_WRITE_BYTES, minFreeBytes: DEFAULT_MIN_FREE_BYTES, maxFiles: DEFAULT_MAX_FILES, ...disk };
   const target = join(realpathSync(dirname(resolve(out))), basename(resolve(out)));
   for (const root of [repository, ...roots].filter(Boolean)) {
     if (within(target, realpathSync(root))) throw new Error("--out must not be inside the run, adapter or repository it replays from");
@@ -124,6 +138,12 @@ export function materialize({ bundle, repository, out, roots = [], change = null
   // In the source's own object format, so a SHA-256 commit id can be fetched.
   git(["init", "-q", `--object-format=${git(["rev-parse", "--show-object-format"], resolve(repository))}`], dirs.worktree);
   git(["fetch", "-q", "--no-tags", "--no-write-fetch-head", resolve(repository), bundle.commit], dirs.worktree);
+  try {
+    checkoutFits(dirs.worktree, bundle.commit, target, limits);
+  } catch (err) {
+    rmSync(target, { recursive: true, force: true });
+    throw err;
+  }
   git(["-c", "advice.detachedHead=false", "checkout", "-q", "--detach", bundle.commit], dirs.worktree);
   if (git(["rev-parse", "HEAD"], dirs.worktree) !== bundle.commit) throw new Error("the worktree is not at the checkpoint's commit");
   if (git(["for-each-ref", "--format=%(refname)"], dirs.worktree)) throw new Error("the worktree has refs besides HEAD");
@@ -157,6 +177,7 @@ export function readSpec(spec) {
     maxOutputBytes: Number(spec.max_output_bytes) > 0 ? Number(spec.max_output_bytes) : DEFAULT_MAX_OUTPUT_BYTES,
     maxWriteBytes: Number(spec.max_write_bytes) > 0 ? Number(spec.max_write_bytes) : DEFAULT_MAX_WRITE_BYTES,
     minFreeBytes: Number(spec.min_free_bytes) > 0 ? Number(spec.min_free_bytes) : DEFAULT_MIN_FREE_BYTES,
+    maxFiles: Number(spec.max_files) > 0 ? Number(spec.max_files) : DEFAULT_MAX_FILES,
     limits: { ...DEFAULT_LIMITS, ...(spec.limits || {}) },
     knownDifferences: spec.known_differences || [],
   };
@@ -369,7 +390,14 @@ if (isMain) {
     process.exit(2);
   }
   const change = args.change ? JSON.parse(readFileSync(args.change, "utf8")) : null;
-  const { dirs, change: applied } = materialize({ bundle, repository: args.repository, out: args.out, roots: [args.run, args.adapter], change });
+  let dirs;
+  let applied;
+  try {
+    ({ dirs, change: applied } = materialize({ bundle, repository: args.repository, out: args.out, roots: [args.run, args.adapter], change, disk: { maxWriteBytes: spec.maxWriteBytes, minFreeBytes: spec.minFreeBytes, maxFiles: spec.maxFiles } }));
+  } catch (err) {
+    process.stderr.write(`${err.message}\n`);
+    process.exit(2);
+  }
   const bwrap = process.env.DECISION_MAP_BWRAP || "bwrap";
   const socketDir = mkdtempSync(join(tmpdir(), "net-allow-"));
   process.on("exit", () => rmSync(socketDir, { recursive: true, force: true }));

@@ -383,3 +383,22 @@ test("a stage that reaches its cgroup's memory or process limit is stopped and t
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a checkpoint commit too large to check out is refused before anything is written", async () => {
+  const f = await fixture();
+  try {
+    const bundle = loadBundle(f.bundle);
+    const attempt = (name, disk) => {
+      const out = join(f.top, name);
+      assert.throws(() => materialize({ bundle, repository: f.repo, out, roots: [f.run], disk }), /limit|free/);
+      assert.ok(!existsSync(out));
+    };
+    attempt("bytes", { maxWriteBytes: 1 });
+    attempt("files", { maxFiles: 0 });
+    attempt("floor", { minFreeBytes: Number.MAX_SAFE_INTEGER });
+    const { dirs } = materialize({ bundle, repository: f.repo, out: join(f.top, "fits"), roots: [f.run] });
+    assert.equal(gitIn(dirs.worktree, "rev-parse", "HEAD"), f.base);
+  } finally {
+    rmSync(f.top, { recursive: true, force: true });
+  }
+});
