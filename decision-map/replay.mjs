@@ -21,7 +21,8 @@
 //   { "command": [argv...], "env": { recorded variables }, "pass_env": [names taken from here],
 //     "home": "/path", "mounts": [{ "at": "/path", "from": "worktree|run|adapter|home", "writable": bool }],
 //     "hide": [...], "readable": [...], "allow_hosts": [...], "timeout_seconds": n,
-//     "max_output_bytes": n, "max_write_bytes": n, "min_free_bytes": n, "known_differences": [{ "subject", "recorded", "replay", "note" }] }
+//     "max_output_bytes": n, "max_write_bytes": n, "min_free_bytes": n,
+//     "limits": { "pids": n, "memory_bytes": n, "cpus": n }, "known_differences": [{ "subject", "recorded", "replay", "note" }] }
 //
 // A branch is the checkpoint plus one recorded change (--change): { "root": "run|adapter",
 // "pointer": "...", "mode": "replace|append", "content_file": "/path", "note": "..." }, applied to the
@@ -31,7 +32,7 @@
 // of the stage, so the isolation can be proven before any model runs.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statfsSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmdirSync, rmSync, statfsSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { assessCheckpoint } from "./checkpoint.mjs";
@@ -75,8 +76,14 @@ export function loadBundle(dir) {
   return { record, copies, commit };
 }
 
+// Git runs on the host, before the sandbox and the proxy exist, so it runs without the operator's
+// system and global configuration or any GIT_ variables: a filter, hook or credential helper named
+// there (Git LFS, say) would otherwise act on what the checkpoint's commit asks for, with the host's
+// network. A checkout then writes the files as they are in the commit.
 function git(args, cwd) {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
+  Object.assign(env, { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1", GIT_LFS_SKIP_SMUDGE: "1", GIT_TERMINAL_PROMPT: "0" });
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", env });
   if (result.status !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr.trim()}`);
   return result.stdout.trim();
 }
@@ -150,6 +157,7 @@ export function readSpec(spec) {
     maxOutputBytes: Number(spec.max_output_bytes) > 0 ? Number(spec.max_output_bytes) : DEFAULT_MAX_OUTPUT_BYTES,
     maxWriteBytes: Number(spec.max_write_bytes) > 0 ? Number(spec.max_write_bytes) : DEFAULT_MAX_WRITE_BYTES,
     minFreeBytes: Number(spec.min_free_bytes) > 0 ? Number(spec.min_free_bytes) : DEFAULT_MIN_FREE_BYTES,
+    limits: { ...DEFAULT_LIMITS, ...(spec.limits || {}) },
     knownDifferences: spec.known_differences || [],
   };
 }
@@ -172,6 +180,63 @@ function killGroup(pid, signal) {
   }
 }
 
+// Resource limits. The stage runs in a cgroup of its own, made under one the operator delegates to the
+// harness (--cgroup), with a cap on its processes, its memory (and no swap) and its CPU time; whatever
+// it starts stays in that cgroup. Without --cgroup the replay is refused, unless the operator passes
+// --no-limits, which the record keeps as a known difference.
+export const DEFAULT_LIMITS = { pids: 4096, memory_bytes: 8 * 1024 * 1024 * 1024, cpus: 2 };
+const CGROUP_CONTROLLERS = ["pids", "memory", "cpu"];
+
+export function makeCgroup(parent, limits) {
+  const delegated = readFileSync(join(parent, "cgroup.subtree_control"), "utf8").split(/\s+/);
+  for (const controller of CGROUP_CONTROLLERS) {
+    if (!delegated.includes(controller)) throw new Error(`the cgroup ${parent} does not give its children the ${controller} controller`);
+  }
+  const dir = mkdtempSync(join(parent, "elsewhere-replay-"));
+  writeFileSync(join(dir, "pids.max"), String(limits.pids));
+  writeFileSync(join(dir, "memory.max"), String(limits.memory_bytes));
+  if (existsSync(join(dir, "memory.swap.max"))) writeFileSync(join(dir, "memory.swap.max"), "0");
+  writeFileSync(join(dir, "cpu.max"), `${Math.round(limits.cpus * 100000)} 100000`);
+  return dir;
+}
+
+const eventCount = (file, key) => {
+  try {
+    const line = readFileSync(file, "utf8").split("\n").find((l) => l.startsWith(`${key} `));
+    return line ? Number(line.split(" ")[1]) : 0;
+  } catch {
+    return 0;
+  }
+};
+
+export function cgroupLimitHit(dir) {
+  if (eventCount(join(dir, "memory.events"), "oom_kill") > 0) return "memory";
+  if (eventCount(join(dir, "pids.events"), "max") > 0) return "pids";
+  return null;
+}
+
+export function closeCgroup(dir) {
+  try {
+    writeFileSync(join(dir, "cgroup.kill"), "1");
+  } catch {
+    // an older kernel; the process group was killed already
+  }
+  // The kernel empties a killed cgroup shortly after; it can only be removed once empty.
+  for (let i = 0; i < 50; i += 1) {
+    try {
+      rmdirSync(dir);
+      return;
+    } catch {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
+  }
+}
+
+// The stage's argv, started inside the cgroup: a shell moves itself in and then becomes the sandbox.
+export function inCgroup(dir, { file, args }) {
+  return { file: "/bin/sh", args: ["-c", 'echo $$ > "$0/cgroup.procs" || exit 125; exec "$@"', dir, file, ...args] };
+}
+
 // The stage's output goes to its logs through the harness, which counts it: past maxOutputBytes (both
 // streams together) the rest is dropped and the stage is stopped as on a timeout, so a stage that
 // floods its output cannot fill the operator's disk.
@@ -189,7 +254,7 @@ const freeBytes = (path) => {
   return fs.bavail * fs.bsize;
 };
 
-export function runLogged({ file, args, env }, logs, { timeoutMs, name = "", graceMs = 30000, maxOutputBytes = DEFAULT_MAX_OUTPUT_BYTES, disk = null }) {
+export function runLogged({ file, args, env }, logs, { timeoutMs, name = "", graceMs = 30000, maxOutputBytes = DEFAULT_MAX_OUTPUT_BYTES, disk = null, cgroup = null, intervalMs = 1000 }) {
   return new Promise((done) => {
     const out = openSync(join(logs, `${name}stdout.log`), "wx", 0o600);
     const err = openSync(join(logs, `${name}stderr.log`), "wx", 0o600);
@@ -224,6 +289,20 @@ export function runLogged({ file, args, env }, logs, { timeoutMs, name = "", gra
       }, disk.intervalMs || 1000);
       watch.unref();
     }
+    // A stage in a cgroup that reached its memory or process limit is stopped rather than left to
+    // limp on, and the record says which limit it was.
+    let limitHit = null;
+    let limitWatch = null;
+    if (cgroup) {
+      limitWatch = setInterval(() => {
+        const hit = cgroupLimitHit(cgroup);
+        if (hit && !limitHit) {
+          limitHit = hit;
+          stop();
+        }
+      }, intervalMs);
+      limitWatch.unref();
+    }
     const keep = (fd) => (chunk) => {
       const room = maxOutputBytes - written;
       if (chunk.length > room) {
@@ -247,12 +326,14 @@ export function runLogged({ file, args, env }, logs, { timeoutMs, name = "", gra
       settled = true;
       clearTimeout(timer);
       clearInterval(watch);
+      clearInterval(limitWatch);
+      if (cgroup && !limitHit) limitHit = cgroupLimitHit(cgroup);
       // Once the child is gone its group id can be reused, so the delayed kill must not fire.
       clearTimeout(killTimer);
       closeSync(out);
       closeSync(err);
       if (child.pid) killGroup(child.pid, "SIGKILL");
-      done({ status, signal, error, timedOut, truncated, outputBytes: written, diskStopped, diskUsedBytes: used });
+      done({ status, signal, error, timedOut, truncated, outputBytes: written, diskStopped, diskUsedBytes: used, limitHit });
     };
     child.on("error", (error) => finish(null, null, error));
     child.on("close", (status, signal) => finish(status, signal, null));
@@ -263,11 +344,14 @@ function parseArgs(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
-    if (["--bundle", "--repository", "--spec", "--out", "--change", "--run", "--adapter"].includes(flag) && argv[i + 1]) args[flag.slice(2)] = argv[++i];
+    if (["--bundle", "--repository", "--spec", "--out", "--change", "--run", "--adapter", "--cgroup"].includes(flag) && argv[i + 1]) args[flag.slice(2)] = argv[++i];
     else if (flag === "--probe") args.probe = true;
+    else if (flag === "--no-limits") args.noLimits = true;
     else throw new Error(`Unknown argument: ${flag}`);
   }
-  for (const need of ["bundle", "repository", "spec", "out"]) if (!args[need]) throw new Error(`Missing --${need}. Usage: node decision-map/replay.mjs --bundle <dir> --repository <git-dir> --spec <spec.json> --out <dir> [--run <dir>] [--adapter <dir>] [--change <change.json>] [--probe]`);
+  for (const need of ["bundle", "repository", "spec", "out"]) if (!args[need]) throw new Error(`Missing --${need}. Usage: node decision-map/replay.mjs --bundle <dir> --repository <git-dir> --spec <spec.json> --out <dir> [--run <dir>] [--adapter <dir>] [--change <change.json>] (--cgroup <dir> | --no-limits) [--probe]`);
+  if (!args.probe && !args.cgroup && !args.noLimits) throw new Error("A replay runs in a cgroup with resource limits: pass --cgroup <a cgroup delegated to you>, or --no-limits to run without them (recorded as a known difference).");
+  if (args.cgroup && args.noLimits) throw new Error("--cgroup and --no-limits contradict each other");
   return args;
 }
 
@@ -337,8 +421,25 @@ if (isMain) {
   // a recorded PATH or loader variable cannot choose or alter it.
   const stage = modelCommand({ ...sandboxArgs, setenv: spec.env }, bwrap);
   record.sandbox = [stage.file, ...stage.args.slice(0, stage.args.indexOf("--"))];
+  let cgroup = null;
+  if (args.cgroup) {
+    try {
+      cgroup = makeCgroup(args.cgroup, spec.limits);
+    } catch (err) {
+      process.stderr.write(`${err.message}\n`);
+      process.exit(2);
+    }
+    record.limits = { ...spec.limits };
+  } else {
+    record.limits = null;
+    record.known_differences.push({ subject: "resource limits", recorded: null, replay: "none", note: "run with --no-limits: no cap on the stage's processes, memory or CPU" });
+  }
   record.started_at = new Date().toISOString();
-  const result = await runLogged({ ...stage, env: launcher }, dirs.logs, { timeoutMs: spec.timeoutMs, maxOutputBytes: spec.maxOutputBytes, disk: { path: args.out, maxWriteBytes: spec.maxWriteBytes, minFreeBytes: spec.minFreeBytes } });
+  const result = await runLogged({ ...(cgroup ? inCgroup(cgroup, stage) : stage), env: launcher }, dirs.logs, { timeoutMs: spec.timeoutMs, maxOutputBytes: spec.maxOutputBytes, disk: { path: args.out, maxWriteBytes: spec.maxWriteBytes, minFreeBytes: spec.minFreeBytes }, cgroup });
+  if (cgroup) {
+    closeCgroup(cgroup);
+    record.limits.hit = result.limitHit;
+  }
   record.finished_at = new Date().toISOString();
   record.duration_ms = Date.parse(record.finished_at) - Date.parse(record.started_at);
   record.exit = result.error ? String(result.error.code || result.error) : result.status ?? result.signal;
@@ -348,5 +449,5 @@ if (isMain) {
   record.tunnels = { asked: tunnels, refused, closed_at_tls: closedAtTls, log: "logs/tunnels.jsonl" };
   writeFileSync(join(args.out, "replay.json"), `${JSON.stringify(record, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   process.stdout.write(`${JSON.stringify({ exit: record.exit, timed_out: record.timed_out, output: record.output, duration_ms: record.duration_ms, tunnels: record.tunnels }, null, 2)}\n`);
-  process.exit(record.exit === 0 && !record.timed_out && !result.truncated && !result.diskStopped ? 0 : 1);
+  process.exit(record.exit === 0 && !record.timed_out && !result.truncated && !result.diskStopped && !result.limitHit ? 0 : 1);
 }

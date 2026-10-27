@@ -172,7 +172,7 @@ test("a replay records its branch, exit, duration and logs, and the stage gets t
     const specFile = join(f.top, "spec.json");
     writeFileSync(specFile, JSON.stringify(specFor({ command: ["sh", "-c", 'echo "stage-ran $STAGE_SETTING"; exit 3'] })));
     const out = join(f.top, "replay");
-    const result = spawnSync(process.execPath, [harness, "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", out, "--run", f.run], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: fakeBwrap } });
+    const result = spawnSync(process.execPath, [harness, "--no-limits", "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", out, "--run", f.run], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: fakeBwrap } });
     assert.equal(result.status, 1, result.stderr);
     const record = JSON.parse(readFileSync(join(out, "replay.json"), "utf8"));
     assert.equal(record.exit, 3);
@@ -182,12 +182,12 @@ test("a replay records its branch, exit, duration and logs, and the stage gets t
     assert.ok(record.env.includes("STAGE_SETTING") && record.duration_ms >= 0);
     assert.equal(readFileSync(join(out, "logs", "stdout.log"), "utf8"), "stage-ran recorded\n");
     // A second replay into the same directory is refused rather than mixing two outcomes.
-    const again = spawnSync(process.execPath, [harness, "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", out], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: fakeBwrap } });
+    const again = spawnSync(process.execPath, [harness, "--no-limits", "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", out], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: fakeBwrap } });
     assert.notEqual(again.status, 0);
     assert.ok(!existsSync(join(f.run, "replay")));
     // A sandbox that cannot start still leaves its record.
     const missing = join(f.top, "replay-missing");
-    const failed = spawnSync(process.execPath, [harness, "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", missing], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: join(f.top, "no-such-bwrap") } });
+    const failed = spawnSync(process.execPath, [harness, "--no-limits", "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", missing], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: join(f.top, "no-such-bwrap") } });
     assert.equal(failed.status, 1, failed.stderr);
     assert.equal(JSON.parse(readFileSync(join(missing, "replay.json"), "utf8")).exit, "ENOENT");
     const probeMissing = spawnSync(process.execPath, [harness, "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", join(f.top, "probe-missing"), "--probe"], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: join(f.top, "no-such-bwrap") } });
@@ -196,7 +196,7 @@ test("a replay records its branch, exit, duration and logs, and the stage gets t
     // A stage that exits cleanly when the timeout stops it still fails the replay.
     const slowSpec = join(f.top, "slow.json");
     writeFileSync(slowSpec, JSON.stringify(specFor({ command: ["sh", "-c", 'trap "exit 0" TERM; sleep 30 & wait'], timeout_seconds: 1 })));
-    const slow = spawnSync(process.execPath, [harness, "--bundle", f.bundle, "--repository", f.repo, "--spec", slowSpec, "--out", join(f.top, "replay-slow")], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: fakeBwrap } });
+    const slow = spawnSync(process.execPath, [harness, "--no-limits", "--bundle", f.bundle, "--repository", f.repo, "--spec", slowSpec, "--out", join(f.top, "replay-slow")], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: fakeBwrap } });
     assert.equal(slow.status, 1, slow.stderr);
     const slowRecord = JSON.parse(readFileSync(join(f.top, "replay-slow", "replay.json"), "utf8"));
     assert.equal(slowRecord.timed_out, true);
@@ -262,7 +262,7 @@ test("the recorded environment reaches the stage only, never the launcher of the
     const specFile = join(f.top, "spec.json");
     writeFileSync(specFile, JSON.stringify(specFor({ command: ["/bin/sh", "-c", 'echo "path=$PATH setting=$STAGE_SETTING"'], env: { STAGE_SETTING: "recorded", PATH: recorded } })));
     const out = join(f.top, "replay");
-    const result = spawnSync(process.execPath, [harness, "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", out], { encoding: "utf8", env: { ...process.env, PATH: `${trusted}:${process.env.PATH}`, DECISION_MAP_BWRAP: "launcher" } });
+    const result = spawnSync(process.execPath, [harness, "--no-limits", "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", out], { encoding: "utf8", env: { ...process.env, PATH: `${trusted}:${process.env.PATH}`, DECISION_MAP_BWRAP: "launcher" } });
     assert.equal(result.status, 0, result.stderr);
     assert.ok(!existsSync(marker));
     assert.equal(readFileSync(join(out, "logs", "stdout.log"), "utf8"), `path=${recorded} setting=recorded\n`);
@@ -277,7 +277,7 @@ test("a stage that floods its output is cut at the limit, stopped, and fails the
     const specFile = join(f.top, "spec.json");
     writeFileSync(specFile, JSON.stringify(specFor({ command: ["/bin/sh", "-c", "yes flood; yes err >&2"], max_output_bytes: 4096 })));
     const out = join(f.top, "replay");
-    const result = spawnSync(process.execPath, [harness, "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", out], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: fakeBwrap } });
+    const result = spawnSync(process.execPath, [harness, "--no-limits", "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", out], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: fakeBwrap } });
     assert.equal(result.status, 1, result.stderr);
     const record = JSON.parse(readFileSync(join(out, "replay.json"), "utf8"));
     assert.deepEqual(record.output, { bytes: 4096, limit: 4096, truncated: true });
@@ -308,5 +308,78 @@ test("a stage that uses up the disk is stopped, by the space it used or the spac
     assert.equal(quiet.diskStopped, false);
   } finally {
     rmSync(logs, { recursive: true, force: true });
+  }
+});
+
+test("materializing the commit ignores filters and attributes from the operator's own git configuration", async () => {
+  const f = await fixture();
+  const saved = process.env.GIT_CONFIG_GLOBAL;
+  try {
+    const marker = join(f.top, "filter-ran");
+    const attributes = join(f.top, "attributes");
+    writeFileSync(attributes, "* filter=planted\n");
+    const config = join(f.top, "gitconfig");
+    writeFileSync(config, `[core]\n\tattributesFile = ${attributes}\n[filter "planted"]\n\tsmudge = sh -c 'touch ${marker}; cat'\n\trequired = true\n`);
+    process.env.GIT_CONFIG_GLOBAL = config;
+    const { dirs } = materialize({ bundle: loadBundle(f.bundle), repository: f.repo, out: join(f.top, "replay"), roots: [f.run] });
+    assert.ok(existsSync(join(dirs.worktree, ".git")));
+    assert.ok(!existsSync(marker));
+  } finally {
+    if (saved === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    else process.env.GIT_CONFIG_GLOBAL = saved;
+    rmSync(f.top, { recursive: true, force: true });
+  }
+});
+
+test("a replay runs in a cgroup with limits, or says it ran without them", async () => {
+  const f = await fixture();
+  try {
+    const specFile = join(f.top, "spec.json");
+    writeFileSync(specFile, JSON.stringify(specFor({ command: ["/bin/sh", "-c", "echo ran"], limits: { pids: 64 } })));
+    const run = (out, extra) => spawnSync(process.execPath, [harness, "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", join(f.top, out), ...extra], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: fakeBwrap } });
+    // Neither a cgroup nor an explicit --no-limits: refused before anything is laid out.
+    const refused = run("none", []);
+    assert.equal(refused.status, 2);
+    assert.match(refused.stderr, /--cgroup/);
+    assert.ok(!existsSync(join(f.top, "none")));
+    // A cgroup that does not give its children the controllers is refused too.
+    const parent = join(f.top, "cgroup");
+    mkdirSync(parent);
+    writeFileSync(join(parent, "cgroup.subtree_control"), "cpu\n");
+    assert.equal(run("partial", ["--cgroup", parent]).status, 2);
+    // With one, the stage starts inside it under the spec's limits and the defaults for the rest.
+    writeFileSync(join(parent, "cgroup.subtree_control"), "cpu memory pids\n");
+    const limited = run("limited", ["--cgroup", parent]);
+    assert.equal(limited.status, 0, limited.stderr);
+    const record = JSON.parse(readFileSync(join(f.top, "limited", "replay.json"), "utf8"));
+    assert.deepEqual(record.limits, { pids: 64, memory_bytes: 8 * 1024 ** 3, cpus: 2, hit: null });
+    const [child] = readdirSync(parent).filter((name) => name.startsWith("elsewhere-replay-"));
+    assert.equal(readFileSync(join(parent, child, "pids.max"), "utf8"), "64");
+    assert.equal(readFileSync(join(parent, child, "cpu.max"), "utf8"), "200000 100000");
+    assert.match(readFileSync(join(parent, child, "cgroup.procs"), "utf8"), /^\d+\n$/);
+    // Without, the record says so.
+    const open = run("open", ["--no-limits"]);
+    assert.equal(open.status, 0, open.stderr);
+    const openRecord = JSON.parse(readFileSync(join(f.top, "open", "replay.json"), "utf8"));
+    assert.equal(openRecord.limits, null);
+    assert.ok(openRecord.known_differences.some((d) => d.subject === "resource limits"));
+  } finally {
+    rmSync(f.top, { recursive: true, force: true });
+  }
+});
+
+test("a stage that reaches its cgroup's memory or process limit is stopped and the limit named", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "replay-cgroup-"));
+  try {
+    writeFileSync(join(dir, "memory.events"), "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n");
+    writeFileSync(join(dir, "pids.events"), "max 0\n");
+    const logs = join(dir, "logs");
+    mkdirSync(logs);
+    // The stage itself trips the limit, as the kernel's counter would.
+    const result = await runLogged({ file: "sh", args: ["-c", `sleep 0.2; echo "max 3" > ${join(dir, "pids.events")}; sleep 30`], env: process.env }, logs, { timeoutMs: 20000, graceMs: 300, cgroup: dir, intervalMs: 50 });
+    assert.equal(result.limitHit, "pids");
+    assert.equal(result.timedOut, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
