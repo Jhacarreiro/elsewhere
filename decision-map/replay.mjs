@@ -146,8 +146,13 @@ export function materialize({ bundle, repository, out, roots = [], change = null
   // Only the commit and its history: no remote to push to or fetch from, no refs past it.
   // In the source's own object format, so a SHA-256 commit id can be fetched.
   git(["init", "-q", `--object-format=${git(["rev-parse", "--show-object-format"], resolve(repository))}`], dirs.worktree);
-  git(["fetch", "-q", "--no-tags", "--no-write-fetch-head", resolve(repository), bundle.commit], dirs.worktree);
   try {
+    // The fetch writes the commit's history, which can be far larger than its tree: what it takes in
+    // the source repository is checked against the same limits before anything is fetched.
+    const history = Number(git(["rev-list", "--objects", "--disk-usage", bundle.commit], resolve(repository)));
+    if (history > limits.maxWriteBytes) throw new Error(`the checkpoint's commit and its history take ${history} bytes, more than the limit of ${limits.maxWriteBytes}`);
+    if ((limits.free || freeBytes)(target) - history < limits.minFreeBytes) throw new Error(`fetching the checkpoint's history (${history} bytes) would leave less than ${limits.minFreeBytes} bytes free`);
+    git(["fetch", "-q", "--no-tags", "--no-write-fetch-head", resolve(repository), bundle.commit], dirs.worktree);
     checkoutFits(dirs.worktree, bundle.commit, target, limits);
   } catch (err) {
     rmSync(target, { recursive: true, force: true });

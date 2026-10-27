@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { randomBytes } from "node:crypto";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -304,7 +305,7 @@ test("a stage that uses up the disk is stopped, by the space it used or the spac
     assert.ok(byUse.diskUsedBytes > 5000);
     const byFloor = await run("floor-", falling(), { maxWriteBytes: 1e12, minFreeBytes: 995_000 });
     assert.equal(byFloor.diskStopped, true);
-    const quiet = await runLogged({ file: "true", args: [], env: process.env }, logs, { timeoutMs: 20000, name: "quiet-", disk: { path: logs, maxWriteBytes: 1, minFreeBytes: 0 } });
+    const quiet = await runLogged({ file: "true", args: [], env: process.env }, logs, { timeoutMs: 20000, name: "quiet-", disk: { path: logs, maxWriteBytes: 1, minFreeBytes: 0, free: () => 1_000_000 } });
     assert.equal(quiet.diskStopped, false);
   } finally {
     rmSync(logs, { recursive: true, force: true });
@@ -433,5 +434,30 @@ test("a stage that went past the disk limit and exited before the next check sti
     assert.equal(result.diskUsedBytes, 10_000);
   } finally {
     rmSync(logs, { recursive: true, force: true });
+  }
+});
+
+test("a commit whose history is too large to fetch is refused before the fetch", () => {
+  const top = mkdtempSync(join(tmpdir(), "replay-history-"));
+  try {
+    const repo = join(top, "repo");
+    mkdirSync(repo);
+    execFileSync("git", ["init", "-q", repo]);
+    const commitAll = (message) => gitIn(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", message);
+    writeFileSync(join(repo, "big.bin"), randomBytes(4 * 1024 * 1024));
+    writeFileSync(join(repo, "small.txt"), "small");
+    gitIn(repo, "add", "-A");
+    commitAll("big");
+    gitIn(repo, "rm", "-q", "big.bin");
+    commitAll("drop big");
+    const commitId = gitIn(repo, "rev-parse", "HEAD");
+    const out = join(top, "over");
+    // The tree holds five bytes; its history holds the 4 MiB file.
+    assert.throws(() => materialize({ bundle: { commit: commitId, copies: [] }, repository: repo, out, disk: { maxWriteBytes: 1024 * 1024 } }), /history take/);
+    assert.ok(!existsSync(out));
+    const { dirs } = materialize({ bundle: { commit: commitId, copies: [] }, repository: repo, out: join(top, "fits") });
+    assert.deepEqual(readdirSync(dirs.worktree).filter((n) => n !== ".git"), ["small.txt"]);
+  } finally {
+    rmSync(top, { recursive: true, force: true });
   }
 });
