@@ -13,6 +13,7 @@ Small, dependency-free Node modules in [`decision-map/`](../decision-map):
 | `generate.mjs` | Phase 2, 2 | Proposes generated alternatives per decision through a configured command, from pre-decision artifacts only. Read-only. See [generated alternatives](#generated-alternatives). |
 | `prompt-command.mjs` | Phase 2, 4 | A generator command that writes the request as a plain-text prompt for any model CLI reading stdin, and reads the JSON reply out of its answer. `--keep <dir>` keeps every exchange; `--hide <dir>` runs the CLI in a bwrap sandbox that shows only the system directories and those named with `--readable <dir>`, read-only, the `--writable <dir>` ones writable, and that directory empty, `--sandbox-env <NAME>` hands that sandbox to the CLI as an argv prefix for its model-facing process, `--probe` checks it, `--canary` checks through the full command that the model really runs in it, and the CLI gets only the basic environment plus the variables named with `--env <NAME>`. With `--allow-host <host>`, the sandbox has no network of its own and reaches only those hosts through an allowlist proxy (Phase 3 step 3, [network boundary](REPLAY.md#network-boundary)). |
 | `net-allow.mjs` | Phase 3, 3 | The allowlist proxy, the forwarder that runs inside the sandbox, and the boundary check the probe runs. |
+| `replay.mjs` | Phase 3, 3 | Runs one stage again from an adequate checkpoint bundle, in fresh copies mounted at the run's own paths, behind the network boundary, and records the outcome ([harness](REPLAY.md#harness)). |
 
 ## Usage
 

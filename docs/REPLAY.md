@@ -1,6 +1,6 @@
 # Isolated replay (Phase 3 step 3)
 
-**Status:** in progress. The network boundary is built and checked on the owner's machine; the harness that materializes a checkpoint and runs a stage in it is not built yet. Nothing here has run a replay.
+**Status:** in progress. The network boundary and the harness are built and checked on the owner's machine with probes and a stage that runs no model. Nothing here has replayed a stage with a model yet.
 
 A replay runs one stage again from an adequate [checkpoint](CHECKPOINT_RECORD.md). It must not see what happened after the decision, through files or through the network. Files are handled by the [sandbox adapter](../decision-map/prompt-command.mjs) from Phase 2: the run, the adapter's state and anything written later are hidden, and the CLI sees only system directories and the ones named readable or writable. This page covers the network.
 
@@ -49,3 +49,56 @@ Two of the refused hosts are leak routes the boundary exists for: the Codex CLI 
 - With `--sandbox-env`, the CLI's trusted start-up runs outside the sandbox, with the network. That start-up is the Development Cycle's Codex bridge, which reads the login and starts the app-server. The model and everything it runs are inside the sandbox.
 - Host names are resolved outside the sandbox, by the proxy. Inside, there is no name resolution at all.
 - The proxy sees the TLS server name, not the HTTP request inside the encrypted tunnel. An edge that routed by the encrypted `Host` header rather than the server name could still be used to reach another site behind it; whether that works depends on the provider's edge, not on the proxy.
+
+## Harness
+
+[`decision-map/replay.mjs`](../decision-map/replay.mjs) runs one stage again from an adequate [checkpoint bundle](CHECKPOINT_RECORD.md#builder):
+
+```sh
+node decision-map/replay.mjs --bundle <dir> --repository <git-dir> --spec <spec.json> --out <dir> \
+  [--run <dir>] [--adapter <dir>] [--change <change.json>] [--probe]
+```
+
+- **Bundle.** The harness recomputes the checkpoint's adequacy and checks every copy against the hash the record gives. An inadequate checkpoint or a changed copy is refused.
+- **Fresh copies,** under `--out`, which must be outside the repository and the run and adapter roots. `worktree/` is a new repository that holds the checkpoint's commit and its history, fetched by id. It has no remote and no refs, so no later commit, tag or branch is in it. `run/` and `adapter/` hold the checkpoint's inputs at their pointers and nothing else. `home/` starts empty. The repository is only read from.
+- **Original paths.** The stage's prompt and configuration name the paths the run used (its project checkout, its run directory, the adapter's state directory, its home). The spec mounts each copy at the path it replaces, so those recorded inputs stay byte for byte as they were. The sandbox is the [sandbox adapter's](../decision-map/prompt-command.mjs): system directories and the spec's readable ones, read-only; the spec's hidden directories empty; the copies over them.
+- **Network.** A replay always runs behind the [network boundary](#network-boundary). A spec without provider hosts is refused.
+- **Branch.** A control replays the checkpoint unchanged. A branch adds one recorded change (`--change`), a file replaced or appended to in the run or adapter copy before the stage starts. The record keeps the change's hashes before and after.
+- **Record.** `replay.json` holds the checkpoint, commit, branch, command, the names of the variables the stage got, the sandbox, the start, end and duration, the exit status, the proxy's counts, and the known differences, the checkpoint's own plus the spec's. The stage's output and the proxy's log are kept in `logs/`. A second replay into the same directory is refused.
+- **Probe.** `--probe` runs the sandbox adapter's probe with the same mounts and boundary instead of the stage.
+
+The spec:
+
+```json
+{
+  "command": ["<the stage's argv, as the run recorded it>"],
+  "env": { "SETTING": "as the run recorded it" },
+  "pass_env": ["PROVIDER_LOGIN_VARIABLE"],
+  "home": "/original/home",
+  "mounts": [
+    { "at": "/original/runs/project", "from": "run", "writable": true },
+    { "at": "/original/adapter-state/worktrees/<run>/integration", "from": "worktree", "writable": true },
+    { "at": "/original/adapter-state", "from": "adapter", "writable": true }
+  ],
+  "hide": ["/original/runs", "/original/wiki"],
+  "readable": ["/where/the/clis/are/installed"],
+  "allow_hosts": ["provider.example"],
+  "timeout_seconds": 14400,
+  "known_differences": [{ "subject": "adapter version", "recorded": null, "replay": "...", "note": "..." }]
+}
+```
+
+### Checked on the owner's machine (2026-10-27)
+
+On the baseline run's adequate checkpoint, the start of the implementation pass, with the run's own paths mounted:
+
+- The probe passed. The hidden directories were empty, the root read-only, and the copies and the fresh home writable. Direct connections failed, `github.com` was refused, and the three providers' hosts were admitted.
+- A stage that runs no model listed what it could see. The run directory held only the checkpoint's six run inputs. The previous run's delivery record was not there, though its id is what names the commit. The project checkout was at the checkpoint's commit with no refs at all. The adapter's state held only its routing configuration.
+
+### Before the first replay with a model
+
+These are open, and step 4 cannot start until each is either solved or recorded as a known difference:
+
+- **The project wiki.** It was one of the stage's read roots, and it is a git repository too. The checkpoint holds one repository commit today, so the wiki is hidden. Either the checkpoint names a second commit (the wiki as it was before the decision), or its absence is a known difference.
+- **Provider logins.** Each CLI needs its login inside the sandbox. That means a fresh configuration directory holding only the credential, not the operator's own, which keeps other sessions' history. The Codex bridge reads its login from the agent runtime's state, which the sandbox hides.
+- **Recorded configuration that no longer exists.** The recorded `PATH` names a plugin build that has since been replaced. The runner's lifecycle hook reports to local services the sandbox cannot reach. The adapter has been upgraded since the run.
