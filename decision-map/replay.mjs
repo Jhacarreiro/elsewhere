@@ -79,13 +79,15 @@ export function loadBundle(dir) {
 // Git runs on the host, before the sandbox and the proxy exist, so it runs without the operator's
 // system and global configuration or any GIT_ variables: a filter, hook or credential helper named
 // there (Git LFS, say) would otherwise act on what the checkpoint's commit asks for, with the host's
-// network. A checkout then writes the files as they are in the commit.
-function git(args, cwd, { raw = false, maxBuffer = 64 * 1024 * 1024 } = {}) {
+// network. A checkout then writes the files as they are in the commit. Nor may it fetch a missing
+// object from a partial clone's promisor remote (GIT_NO_LAZY_FETCH, honoured from Git 2.44; older Git
+// is covered by sourceComplete, which runs first).
+function git(args, cwd, { raw = false, maxBuffer = 64 * 1024 * 1024, allowStatus = [] } = {}) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
-  Object.assign(env, { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1", GIT_LFS_SKIP_SMUDGE: "1", GIT_TERMINAL_PROMPT: "0" });
+  Object.assign(env, { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1", GIT_LFS_SKIP_SMUDGE: "1", GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" });
   const result = spawnSync("git", args, { cwd, encoding: "utf8", env, maxBuffer });
   if (result.error) throw new Error(`git ${args[0]} failed: ${result.error.code || result.error.message}`);
-  if (result.status !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr.trim()}`);
+  if (result.status !== 0 && !allowStatus.includes(result.status)) throw new Error(`git ${args[0]} failed: ${result.stderr.trim()}`);
   return raw ? result.stdout : result.stdout.trim();
 }
 
@@ -119,7 +121,19 @@ function applyChange(dirs, change) {
 // all, more than maxFiles files, or less than minFreeBytes left afterwards, and nothing is written.
 export const DEFAULT_MAX_FILES = 1_000_000;
 
+// A partial clone fetches the objects it lacks from its promisor remote as soon as a command needs
+// them, into the source and over the host's network. Such a source is checked with --missing=print,
+// which never fetches, and refused if the commit's history lacks anything.
+function sourceComplete(repository, commit) {
+  const promisor = git(["config", "--get-regexp", "^(extensions\\.partialclone|remote\\..*\\.promisor)$"], repository, { allowStatus: [1] });
+  if (!promisor) return;
+  const missing = git(["rev-list", "--objects", "--no-object-names", "--missing=print", commit], repository, { raw: true, maxBuffer: 1024 * 1024 * 1024 })
+    .split("\n").filter((line) => line.startsWith("?"));
+  if (missing.length) throw new Error(`the repository is a partial clone missing ${missing.length} object(s) of the checkpoint's commit; fetch them first or replay from a full clone`);
+}
+
 function layoutFits({ repository, commit, copies, change, out, maxWriteBytes, minFreeBytes, maxFiles, free = freeBytes }) {
+  sourceComplete(repository, commit);
   const history = Number(git(["rev-list", "--objects", "--disk-usage", commit], repository));
   // Only each entry's size, about ten bytes a file, so the limit's worth of files fits the buffer; a
   // listing too long for it is a tree past the limit anyway.

@@ -462,6 +462,42 @@ test("a commit whose history is too large to fetch is refused before the fetch",
   }
 });
 
+test("a partial clone missing the commit's objects is refused without fetching them", () => {
+  const top = mkdtempSync(join(tmpdir(), "replay-partial-"));
+  try {
+    const origin = join(top, "origin");
+    mkdirSync(origin);
+    execFileSync("git", ["init", "-q", origin]);
+    gitIn(origin, "config", "uploadpack.allowFilter", "true");
+    const commitAll = (message) => gitIn(origin, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", message);
+    writeFileSync(join(origin, "old.txt"), "only in the old commit\n");
+    gitIn(origin, "add", "-A");
+    commitAll("old");
+    const old = gitIn(origin, "rev-parse", "HEAD");
+    gitIn(origin, "rm", "-q", "old.txt");
+    writeFileSync(join(origin, "new.txt"), "new\n");
+    gitIn(origin, "add", "-A");
+    commitAll("new");
+    const source = join(top, "source");
+    execFileSync("git", ["clone", "-q", "--filter=blob:none", `file://${origin}`, source]);
+    const packs = () => readdirSync(join(source, ".git", "objects", "pack")).sort();
+    const before = packs();
+    const out = join(top, "replay");
+    assert.throws(() => materialize({ bundle: { commit: old, copies: [] }, repository: source, out }), /partial clone missing 1 object/);
+    assert.deepEqual(packs(), before);
+    assert.ok(!existsSync(out));
+    // The head's history holds the old blob too, so it is refused as well.
+    assert.throws(() => materialize({ bundle: { commit: gitIn(source, "rev-parse", "HEAD"), copies: [] }, repository: source, out }), /partial clone missing 1 object/);
+    assert.deepEqual(packs(), before);
+    // Once the operator has fetched everything, the same partial clone lays out.
+    gitIn(source, "cat-file", "-p", `${old}:old.txt`);
+    const { dirs } = materialize({ bundle: { commit: old, copies: [] }, repository: source, out });
+    assert.equal(readFileSync(join(dirs.worktree, "old.txt"), "utf8"), "only in the old commit\n");
+  } finally {
+    rmSync(top, { recursive: true, force: true });
+  }
+});
+
 test("the run inputs and the recorded change count toward the layout's limit", async () => {
   const f = await fixture();
   try {
