@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createReader } from "../decision-map/extract.mjs";
 import { buildCheckpoint, writeBundle } from "../decision-map/checkpoint-build.mjs";
-import { loadBundle, materialize, readSpec, stageSandbox } from "../decision-map/replay.mjs";
+import { loadBundle, materialize, readSpec, runLogged, stageSandbox } from "../decision-map/replay.mjs";
 import { modelCommand, probeCommand } from "../decision-map/prompt-command.mjs";
 
 const harness = new URL("../decision-map/replay.mjs", import.meta.url).pathname;
@@ -203,5 +203,46 @@ test("a replay records its branch, exit, duration and logs, and the stage gets t
     assert.equal(slowRecord.exit, 0);
   } finally {
     rmSync(f.top, { recursive: true, force: true });
+  }
+});
+
+test("the probe allows every copy mounted below one hidden directory, and nothing else there", () => {
+  const top = mkdtempSync(join(tmpdir(), "replay-probe-"));
+  try {
+    const hidden = join(top, "state");
+    for (const name of ["first", "second"]) mkdirSync(join(hidden, name), { recursive: true });
+    const sandbox = { hide: [hidden], readable: [], writable: [], mounts: [{ from: join(top, "a"), at: join(hidden, "first"), writable: true }, { from: join(top, "b"), at: join(hidden, "second"), writable: true }] };
+    const run = () => {
+      const { cli, cliArgs } = probeCommand(sandbox);
+      return spawnSync(cli, cliArgs, { encoding: "utf8" });
+    };
+    const ok = run();
+    assert.match(ok.stdout, new RegExp(`hidden_empty ${hidden}`), ok.stdout);
+    mkdirSync(join(hidden, "later"));
+    assert.match(run().stdout, new RegExp(`hidden_not_empty ${hidden}`));
+  } finally {
+    rmSync(top, { recursive: true, force: true });
+  }
+});
+
+test("a stage stopped by its timeout leaves no delayed kill armed after it exits", async () => {
+  const logs = mkdtempSync(join(tmpdir(), "replay-timeout-"));
+  const kill = process.kill;
+  const late = [];
+  let settled = false;
+  process.kill = (pid, signal) => {
+    if (settled) late.push([pid, signal]);
+    try { return kill.call(process, pid, signal); } catch { return false; }
+  };
+  try {
+    const result = await runLogged({ file: "sh", args: ["-c", 'trap "exit 0" TERM; sleep 30 & wait'], env: process.env }, logs, 200, "", 300);
+    settled = true;
+    assert.equal(result.timedOut, true);
+    // Past the grace period, nothing may signal a group id the system is free to reuse.
+    await pause(600);
+    assert.deepEqual(late, []);
+  } finally {
+    process.kill = kill;
+    rmSync(logs, { recursive: true, force: true });
   }
 });

@@ -169,16 +169,18 @@ function killGroup(pid, signal) {
   }
 }
 
-function runLogged({ file, args, env }, logs, timeoutMs, name = "") {
+export function runLogged({ file, args, env }, logs, timeoutMs, name = "", graceMs = 30000) {
   return new Promise((done) => {
     const out = openSync(join(logs, `${name}stdout.log`), "wx", 0o600);
     const err = openSync(join(logs, `${name}stderr.log`), "wx", 0o600);
     const child = spawn(file, args, { stdio: ["ignore", out, err], detached: true, env });
     let timedOut = false;
+    let killTimer = null;
     const timer = setTimeout(() => {
       timedOut = true;
       killGroup(child.pid, "SIGTERM");
-      setTimeout(() => killGroup(child.pid, "SIGKILL"), 30000).unref();
+      killTimer = setTimeout(() => killGroup(child.pid, "SIGKILL"), graceMs);
+      killTimer.unref();
     }, timeoutMs);
     // A child that cannot start emits both error and close; the outcome is settled once.
     let settled = false;
@@ -186,6 +188,8 @@ function runLogged({ file, args, env }, logs, timeoutMs, name = "") {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      // Once the child is gone its group id can be reused, so the delayed kill must not fire.
+      clearTimeout(killTimer);
       closeSync(out);
       closeSync(err);
       if (child.pid) killGroup(child.pid, "SIGKILL");
