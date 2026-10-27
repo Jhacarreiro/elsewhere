@@ -193,6 +193,14 @@ test("a replay records its branch, exit, duration and logs, and the stage gets t
     const probeMissing = spawnSync(process.execPath, [harness, "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", join(f.top, "probe-missing"), "--probe"], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: join(f.top, "no-such-bwrap") } });
     assert.equal(probeMissing.status, 1, probeMissing.stderr);
     assert.equal(JSON.parse(readFileSync(join(f.top, "probe-missing", "probe.json"), "utf8")).ok, false);
+    // A stage that exits cleanly when the timeout stops it still fails the replay.
+    const slowSpec = join(f.top, "slow.json");
+    writeFileSync(slowSpec, JSON.stringify(specFor({ command: ["sh", "-c", 'trap "exit 0" TERM; sleep 30 & wait'], timeout_seconds: 1 })));
+    const slow = spawnSync(process.execPath, [harness, "--bundle", f.bundle, "--repository", f.repo, "--spec", slowSpec, "--out", join(f.top, "replay-slow")], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: fakeBwrap } });
+    assert.equal(slow.status, 1, slow.stderr);
+    const slowRecord = JSON.parse(readFileSync(join(f.top, "replay-slow", "replay.json"), "utf8"));
+    assert.equal(slowRecord.timed_out, true);
+    assert.equal(slowRecord.exit, 0);
   } finally {
     rmSync(f.top, { recursive: true, force: true });
   }

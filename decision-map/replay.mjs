@@ -263,8 +263,8 @@ if (isMain) {
     const check = networkProbeCommand({ ...sandboxArgs, allow: spec.allow, deny: ["github.com"] });
     const net = await runLogged({ ...modelCommand(check, bwrap), env: modelEnv([], process.env) }, dirs.logs, 60000, "probe-network-");
     const found = ["probe-files-", "probe-network-"].flatMap((name) => readFileSync(join(dirs.logs, `${name}stdout.log`), "utf8").split("\n")).filter(Boolean);
-    const ok = files.status === 0 && net.status === 0;
-    writeFileSync(join(args.out, "probe.json"), `${JSON.stringify({ ...record, files_exit: files.status, network_exit: net.status, found, tunnels, refused, closed_at_tls: closedAtTls, ok }, null, 2)}\n`, { mode: 0o600 });
+    const ok = files.status === 0 && !files.timedOut && net.status === 0 && !net.timedOut;
+    writeFileSync(join(args.out, "probe.json"), `${JSON.stringify({ ...record, files_exit: files.status, network_exit: net.status, timed_out: files.timedOut || net.timedOut, found, tunnels, refused, closed_at_tls: closedAtTls, ok }, null, 2)}\n`, { mode: 0o600 });
     process.stdout.write(`${JSON.stringify({ ok, files_exit: files.status, network_exit: net.status, found }, null, 2)}\n`);
     process.exit(ok ? 0 : 1);
   }
@@ -279,5 +279,5 @@ if (isMain) {
   record.tunnels = { asked: tunnels, refused, closed_at_tls: closedAtTls, log: "logs/tunnels.jsonl" };
   writeFileSync(join(args.out, "replay.json"), `${JSON.stringify(record, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   process.stdout.write(`${JSON.stringify({ exit: record.exit, timed_out: record.timed_out, duration_ms: record.duration_ms, tunnels: record.tunnels }, null, 2)}\n`);
-  process.exit(record.exit === 0 ? 0 : 1);
+  process.exit(record.exit === 0 && !record.timed_out ? 0 : 1);
 }
