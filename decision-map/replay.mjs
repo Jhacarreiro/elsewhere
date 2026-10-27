@@ -80,10 +80,11 @@ export function loadBundle(dir) {
 // system and global configuration or any GIT_ variables: a filter, hook or credential helper named
 // there (Git LFS, say) would otherwise act on what the checkpoint's commit asks for, with the host's
 // network. A checkout then writes the files as they are in the commit.
-function git(args, cwd, { raw = false } = {}) {
+function git(args, cwd, { raw = false, maxBuffer = 64 * 1024 * 1024 } = {}) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
   Object.assign(env, { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1", GIT_LFS_SKIP_SMUDGE: "1", GIT_TERMINAL_PROMPT: "0" });
-  const result = spawnSync("git", args, { cwd, encoding: "utf8", env });
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", env, maxBuffer });
+  if (result.error) throw new Error(`git ${args[0]} failed: ${result.error.code || result.error.message}`);
   if (result.status !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr.trim()}`);
   return raw ? result.stdout : result.stdout.trim();
 }
@@ -118,9 +119,17 @@ function applyChange(dirs, change) {
 export const DEFAULT_MAX_FILES = 1_000_000;
 
 function checkoutFits(worktree, commit, out, { maxWriteBytes, minFreeBytes, maxFiles, free = freeBytes }) {
-  const listing = git(["ls-tree", "-r", "-l", "-z", commit], worktree, { raw: true }).split("\0").filter(Boolean);
-  const bytes = listing.reduce((sum, entry) => sum + (Number(entry.split(/\s+/)[3]) || 0), 0);
-  if (listing.length > maxFiles) throw new Error(`the checkpoint's commit has ${listing.length} files, more than the limit of ${maxFiles}`);
+  // Only each entry's size, about ten bytes a file, so the limit's worth of files fits the buffer; a
+  // listing too long for it is a tree past the limit anyway.
+  let sizes;
+  try {
+    sizes = git(["ls-tree", "-r", "-z", "--format=%(objectsize)", commit], worktree, { raw: true, maxBuffer: 32 * Math.max(maxFiles, 1) + 1024 }).split("\0").filter(Boolean);
+  } catch (err) {
+    if (/ENOBUFS|maxBuffer/.test(err.message)) throw new Error(`the checkpoint's commit has more files than the limit of ${maxFiles}`);
+    throw err;
+  }
+  const bytes = sizes.reduce((sum, size) => sum + (Number(size) || 0), 0);
+  if (sizes.length > maxFiles) throw new Error(`the checkpoint's commit has ${sizes.length} files, more than the limit of ${maxFiles}`);
   if (bytes > maxWriteBytes) throw new Error(`the checkpoint's commit holds ${bytes} bytes of files, more than the limit of ${maxWriteBytes}`);
   if (free(out) - bytes < minFreeBytes) throw new Error(`checking out the checkpoint's commit (${bytes} bytes) would leave less than ${minFreeBytes} bytes free`);
 }
@@ -297,17 +306,19 @@ export function runLogged({ file, args, env }, logs, { timeoutMs, name = "", gra
     let diskStopped = false;
     let used = 0;
     let watch = null;
+    let sampleDisk = () => {};
     if (disk) {
       const free = disk.free || freeBytes;
       const start = free(disk.path);
-      watch = setInterval(() => {
+      sampleDisk = () => {
         const now = free(disk.path);
         used = Math.max(used, start - now);
         if (!diskStopped && (used > disk.maxWriteBytes || now < disk.minFreeBytes)) {
           diskStopped = true;
           stop();
         }
-      }, disk.intervalMs || 1000);
+      };
+      watch = setInterval(sampleDisk, disk.intervalMs || 1000);
       watch.unref();
     }
     // A stage in a cgroup that reached its memory or process limit is stopped rather than left to
@@ -348,6 +359,8 @@ export function runLogged({ file, args, env }, logs, { timeoutMs, name = "", gra
       clearTimeout(timer);
       clearInterval(watch);
       clearInterval(limitWatch);
+      // A stage that went past a limit and exited between two checks is caught here, not let through.
+      sampleDisk();
       if (cgroup && !limitHit) limitHit = cgroupLimitHit(cgroup);
       // Once the child is gone its group id can be reused, so the delayed kill must not fire.
       clearTimeout(killTimer);

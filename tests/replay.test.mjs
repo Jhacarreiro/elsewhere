@@ -402,3 +402,36 @@ test("a checkpoint commit too large to check out is refused before anything is w
     rmSync(f.top, { recursive: true, force: true });
   }
 });
+
+test("a commit with many files is measured and checked out, and one past the file limit refused", () => {
+  const top = mkdtempSync(join(tmpdir(), "replay-many-"));
+  try {
+    const repo = join(top, "repo");
+    mkdirSync(join(repo, "files"), { recursive: true });
+    for (let i = 0; i < 16000; i += 1) writeFileSync(join(repo, "files", `f${i}`), "x");
+    execFileSync("git", ["init", "-q", repo]);
+    gitIn(repo, "add", "-A");
+    gitIn(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "many");
+    const commitId = gitIn(repo, "rev-parse", "HEAD");
+    const { dirs } = materialize({ bundle: { commit: commitId, copies: [] }, repository: repo, out: join(top, "fits") });
+    assert.equal(readdirSync(join(dirs.worktree, "files")).length, 16000);
+    assert.throws(() => materialize({ bundle: { commit: commitId, copies: [] }, repository: repo, out: join(top, "over"), disk: { maxFiles: 100 } }), /more files than the limit|files, more than the limit/);
+    assert.ok(!existsSync(join(top, "over")));
+  } finally {
+    rmSync(top, { recursive: true, force: true });
+  }
+});
+
+test("a stage that went past the disk limit and exited before the next check still fails", async () => {
+  const logs = mkdtempSync(join(tmpdir(), "replay-disk-last-"));
+  try {
+    let calls = 0;
+    // Full at the start, then 10 KB gone by the time the stage has exited.
+    const free = () => (calls++ === 0 ? 1_000_000 : 990_000);
+    const result = await runLogged({ file: "true", args: [], env: process.env }, logs, { timeoutMs: 20000, disk: { path: logs, intervalMs: 60000, maxWriteBytes: 5000, minFreeBytes: 0, free } });
+    assert.equal(result.diskStopped, true);
+    assert.equal(result.diskUsedBytes, 10_000);
+  } finally {
+    rmSync(logs, { recursive: true, force: true });
+  }
+});
