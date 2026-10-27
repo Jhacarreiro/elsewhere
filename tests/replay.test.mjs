@@ -288,3 +288,25 @@ test("a stage that floods its output is cut at the limit, stopped, and fails the
     rmSync(f.top, { recursive: true, force: true });
   }
 });
+
+test("a stage that uses up the disk is stopped, by the space it used or the space left", async () => {
+  const logs = mkdtempSync(join(tmpdir(), "replay-disk-"));
+  try {
+    const run = async (name, free, limits) => runLogged({ file: "sh", args: ["-c", "sleep 30"], env: process.env }, logs, { timeoutMs: 20000, name, graceMs: 300, disk: { path: logs, intervalMs: 20, free, ...limits } });
+    // The stage writes 1000 bytes between checks.
+    const falling = () => {
+      let left = 1_000_000;
+      return () => (left -= 1000) + 1000;
+    };
+    const byUse = await run("use-", falling(), { maxWriteBytes: 5000, minFreeBytes: 0 });
+    assert.equal(byUse.diskStopped, true);
+    assert.equal(byUse.timedOut, false);
+    assert.ok(byUse.diskUsedBytes > 5000);
+    const byFloor = await run("floor-", falling(), { maxWriteBytes: 1e12, minFreeBytes: 995_000 });
+    assert.equal(byFloor.diskStopped, true);
+    const quiet = await runLogged({ file: "true", args: [], env: process.env }, logs, { timeoutMs: 20000, name: "quiet-", disk: { path: logs, maxWriteBytes: 1, minFreeBytes: 0 } });
+    assert.equal(quiet.diskStopped, false);
+  } finally {
+    rmSync(logs, { recursive: true, force: true });
+  }
+});

@@ -21,7 +21,7 @@
 //   { "command": [argv...], "env": { recorded variables }, "pass_env": [names taken from here],
 //     "home": "/path", "mounts": [{ "at": "/path", "from": "worktree|run|adapter|home", "writable": bool }],
 //     "hide": [...], "readable": [...], "allow_hosts": [...], "timeout_seconds": n,
-//     "max_output_bytes": n, "known_differences": [{ "subject", "recorded", "replay", "note" }] }
+//     "max_output_bytes": n, "max_write_bytes": n, "min_free_bytes": n, "known_differences": [{ "subject", "recorded", "replay", "note" }] }
 //
 // A branch is the checkpoint plus one recorded change (--change): { "root": "run|adapter",
 // "pointer": "...", "mode": "replace|append", "content_file": "/path", "note": "..." }, applied to the
@@ -31,7 +31,7 @@
 // of the stage, so the isolation can be proven before any model runs.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statfsSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { assessCheckpoint } from "./checkpoint.mjs";
@@ -148,6 +148,8 @@ export function readSpec(spec) {
     allow: spec.allow_hosts,
     timeoutMs: (Number(spec.timeout_seconds) > 0 ? Number(spec.timeout_seconds) : 4 * 3600) * 1000,
     maxOutputBytes: Number(spec.max_output_bytes) > 0 ? Number(spec.max_output_bytes) : DEFAULT_MAX_OUTPUT_BYTES,
+    maxWriteBytes: Number(spec.max_write_bytes) > 0 ? Number(spec.max_write_bytes) : DEFAULT_MAX_WRITE_BYTES,
+    minFreeBytes: Number(spec.min_free_bytes) > 0 ? Number(spec.min_free_bytes) : DEFAULT_MIN_FREE_BYTES,
     knownDifferences: spec.known_differences || [],
   };
 }
@@ -175,7 +177,19 @@ function killGroup(pid, signal) {
 // floods its output cannot fill the operator's disk.
 export const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 
-export function runLogged({ file, args, env }, logs, { timeoutMs, name = "", graceMs = 30000, maxOutputBytes = DEFAULT_MAX_OUTPUT_BYTES }) {
+// What the stage writes to its writable copies and its home lands on the operator's disk too. With disk
+// set, the harness watches the free space where they are, every second: once the stage has used more
+// than maxWriteBytes of it, or less than minFreeBytes is left, the stage is stopped. A second is long
+// enough for a fast writer to pass the limit by some way, so the floor keeps a margin; an operator
+// replaying a stage they do not trust puts the output directory on a filesystem with its own quota.
+export const DEFAULT_MAX_WRITE_BYTES = 16 * 1024 * 1024 * 1024;
+export const DEFAULT_MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024;
+const freeBytes = (path) => {
+  const fs = statfsSync(path);
+  return fs.bavail * fs.bsize;
+};
+
+export function runLogged({ file, args, env }, logs, { timeoutMs, name = "", graceMs = 30000, maxOutputBytes = DEFAULT_MAX_OUTPUT_BYTES, disk = null }) {
   return new Promise((done) => {
     const out = openSync(join(logs, `${name}stdout.log`), "wx", 0o600);
     const err = openSync(join(logs, `${name}stderr.log`), "wx", 0o600);
@@ -194,6 +208,22 @@ export function runLogged({ file, args, env }, logs, { timeoutMs, name = "", gra
       timedOut = true;
       stop();
     }, timeoutMs);
+    let diskStopped = false;
+    let used = 0;
+    let watch = null;
+    if (disk) {
+      const free = disk.free || freeBytes;
+      const start = free(disk.path);
+      watch = setInterval(() => {
+        const now = free(disk.path);
+        used = Math.max(used, start - now);
+        if (!diskStopped && (used > disk.maxWriteBytes || now < disk.minFreeBytes)) {
+          diskStopped = true;
+          stop();
+        }
+      }, disk.intervalMs || 1000);
+      watch.unref();
+    }
     const keep = (fd) => (chunk) => {
       const room = maxOutputBytes - written;
       if (chunk.length > room) {
@@ -216,12 +246,13 @@ export function runLogged({ file, args, env }, logs, { timeoutMs, name = "", gra
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearInterval(watch);
       // Once the child is gone its group id can be reused, so the delayed kill must not fire.
       clearTimeout(killTimer);
       closeSync(out);
       closeSync(err);
       if (child.pid) killGroup(child.pid, "SIGKILL");
-      done({ status, signal, error, timedOut, truncated, outputBytes: written });
+      done({ status, signal, error, timedOut, truncated, outputBytes: written, diskStopped, diskUsedBytes: used });
     };
     child.on("error", (error) => finish(null, null, error));
     child.on("close", (status, signal) => finish(status, signal, null));
@@ -307,14 +338,15 @@ if (isMain) {
   const stage = modelCommand({ ...sandboxArgs, setenv: spec.env }, bwrap);
   record.sandbox = [stage.file, ...stage.args.slice(0, stage.args.indexOf("--"))];
   record.started_at = new Date().toISOString();
-  const result = await runLogged({ ...stage, env: launcher }, dirs.logs, { timeoutMs: spec.timeoutMs, maxOutputBytes: spec.maxOutputBytes });
+  const result = await runLogged({ ...stage, env: launcher }, dirs.logs, { timeoutMs: spec.timeoutMs, maxOutputBytes: spec.maxOutputBytes, disk: { path: args.out, maxWriteBytes: spec.maxWriteBytes, minFreeBytes: spec.minFreeBytes } });
   record.finished_at = new Date().toISOString();
   record.duration_ms = Date.parse(record.finished_at) - Date.parse(record.started_at);
   record.exit = result.error ? String(result.error.code || result.error) : result.status ?? result.signal;
   record.timed_out = result.timedOut;
   record.output = { bytes: result.outputBytes, limit: spec.maxOutputBytes, truncated: result.truncated };
+  record.disk = { used_bytes: result.diskUsedBytes, max_write_bytes: spec.maxWriteBytes, min_free_bytes: spec.minFreeBytes, stopped: result.diskStopped };
   record.tunnels = { asked: tunnels, refused, closed_at_tls: closedAtTls, log: "logs/tunnels.jsonl" };
   writeFileSync(join(args.out, "replay.json"), `${JSON.stringify(record, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   process.stdout.write(`${JSON.stringify({ exit: record.exit, timed_out: record.timed_out, output: record.output, duration_ms: record.duration_ms, tunnels: record.tunnels }, null, 2)}\n`);
-  process.exit(record.exit === 0 && !record.timed_out && !result.truncated ? 0 : 1);
+  process.exit(record.exit === 0 && !record.timed_out && !result.truncated && !result.diskStopped ? 0 : 1);
 }
