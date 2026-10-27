@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkBoundary, connectTarget, hostAllowed, startAllowProxy, startForwarder } from "../decision-map/net-allow.mjs";
+import { checkBoundary, connectTarget, hostAllowed, startAllowProxy, startForwarder, tlsServerName } from "../decision-map/net-allow.mjs";
 import { canaryFailures, canaryScript, modelCommand, sandboxPrefix } from "../decision-map/prompt-command.mjs";
 
 const netAllow = new URL("../decision-map/net-allow.mjs", import.meta.url).pathname;
@@ -47,28 +47,62 @@ async function withProxy(allow, fn, ports) {
   }
 }
 
+// A minimal TLS ClientHello naming <name> (and offering Encrypted Client Hello with ech), split into
+// records of at most <record> payload bytes, as a latin1 string.
+function clientHello(name, { ech = false, record = 16384, sni = true } = {}) {
+  const u16 = (n) => Buffer.from([n >> 8, n & 255]);
+  const ext = (type, data) => Buffer.concat([u16(type), u16(data.length), data]);
+  const host = Buffer.from(name || "", "latin1");
+  const exts = Buffer.concat([
+    ...(sni ? [ext(0, Buffer.concat([u16(host.length + 3), Buffer.from([0]), u16(host.length), host]))] : []),
+    ...(ech ? [ext(0xfe0d, Buffer.from([0, 1, 2]))] : []),
+    ext(0x002b, Buffer.from([2, 3, 4])),
+  ]);
+  const body = Buffer.concat([u16(0x0303), Buffer.alloc(32, 7), Buffer.from([0]), u16(2), u16(0x1301), Buffer.from([1, 0]), u16(exts.length), exts]);
+  const hs = Buffer.concat([Buffer.from([1, body.length >> 16, (body.length >> 8) & 255, body.length & 255]), body]);
+  const records = [];
+  for (let i = 0; i < hs.length; i += record) {
+    const part = hs.subarray(i, i + record);
+    records.push(Buffer.from([0x16, 3, 1]), u16(part.length), part);
+  }
+  return Buffer.concat(records).toString("latin1");
+}
+
+// Sends <request>, then <send> once the tunnel is up, and returns everything that came back: the
+// echo server behind the proxy returns what reaches it.
 function exchange(connectTo, request, { send } = {}) {
   return new Promise((done, fail) => {
     const s = net.connect(connectTo);
     let got = "";
+    let sent = send;
     s.on("error", fail);
-    s.on("connect", () => s.write(request));
+    s.on("connect", () => s.write(Buffer.from(request, "latin1")));
     s.on("data", (d) => {
       got += d.toString("latin1");
-      if (send && got.includes("\r\n\r\n") && got.startsWith("HTTP/1.1 200")) {
-        s.write(send);
-        send = null;
-      } else if (!send && got.startsWith("HTTP/1.1 200") && got.endsWith("ping")) s.end();
+      if (sent && got.includes("\r\n\r\n") && got.startsWith("HTTP/1.1 200")) {
+        s.write(Buffer.from(sent, "latin1"));
+        sent = null;
+      } else if (!sent && send && got.endsWith(send)) s.end();
     });
     s.on("close", () => done(got));
   });
 }
 
+test("the TLS server name is read from a ClientHello, across records, and a hello hiding it is refused", () => {
+  assert.deepEqual(tlsServerName(Buffer.from(clientHello("api.anthropic.com"), "latin1")), { status: "ok", name: "api.anthropic.com" });
+  assert.deepEqual(tlsServerName(Buffer.from(clientHello("api.anthropic.com", { record: 20 }), "latin1")), { status: "ok", name: "api.anthropic.com" });
+  const whole = Buffer.from(clientHello("api.anthropic.com"), "latin1");
+  assert.deepEqual(tlsServerName(whole.subarray(0, whole.length - 3)), { status: "incomplete" });
+  assert.deepEqual(tlsServerName(Buffer.from(clientHello("api.anthropic.com", { ech: true }), "latin1")), { status: "bad", reason: "encrypted_client_hello" });
+  assert.deepEqual(tlsServerName(Buffer.from(clientHello(null, { sni: false }), "latin1")), { status: "bad", reason: "no_tls_name" });
+  assert.deepEqual(tlsServerName(Buffer.from("GET / HTTP/1.1\r\n\r\n")), { status: "bad", reason: "not_tls" });
+});
+
 test("the proxy tunnels to an allowed host, refuses others and anything but CONNECT, and logs each request", async () => {
   await withProxy(["api.anthropic.com"], async ({ socket, tunnels }) => {
-    const admitted = await exchange(socket, "CONNECT api.anthropic.com:443 HTTP/1.1\r\nHost: api.anthropic.com:443\r\n\r\n", { send: "ping" });
-    assert.ok(admitted.startsWith("HTTP/1.1 200 Connection Established\r\n\r\n"), admitted);
-    assert.ok(admitted.endsWith("ping"));
+    const hello = clientHello("api.anthropic.com");
+    const admitted = await exchange(socket, "CONNECT api.anthropic.com:443 HTTP/1.1\r\nHost: api.anthropic.com:443\r\n\r\n", { send: hello });
+    assert.equal(admitted, `HTTP/1.1 200 Connection Established\r\n\r\n${hello}`);
     assert.match(await exchange(socket, "CONNECT github.com:443 HTTP/1.1\r\n\r\n"), /^HTTP\/1\.1 403 /);
     assert.match(await exchange(socket, "CONNECT api.anthropic.com:22 HTTP/1.1\r\n\r\n"), /^HTTP\/1\.1 403 /);
     assert.match(await exchange(socket, "GET http://api.anthropic.com/ HTTP/1.1\r\nHost: api.anthropic.com\r\n\r\n"), /^HTTP\/1\.1 405 /);
@@ -83,10 +117,40 @@ test("the proxy tunnels to an allowed host, refuses others and anything but CONN
   });
 });
 
-test("bytes sent right after the CONNECT header reach the tunnel", async () => {
+test("a ClientHello sent right after the CONNECT header, or in pieces, reaches the tunnel", async () => {
   await withProxy(["api.anthropic.com"], async ({ socket }) => {
-    const got = await exchange(socket, "CONNECT api.anthropic.com:443 HTTP/1.1\r\n\r\nping");
-    assert.equal(got, "HTTP/1.1 200 Connection Established\r\n\r\nping");
+    const hello = clientHello("api.anthropic.com", { record: 30 });
+    const got = await new Promise((done) => {
+      const s = net.connect(socket);
+      let out = "";
+      s.on("connect", () => {
+        const all = Buffer.from(`CONNECT api.anthropic.com:443 HTTP/1.1\r\n\r\n${hello}`, "latin1");
+        s.write(all.subarray(0, 60));
+        setTimeout(() => s.write(all.subarray(60)), 20);
+      });
+      s.on("data", (d) => {
+        out += d.toString("latin1");
+        if (out.endsWith(hello)) s.end();
+      });
+      s.on("close", () => done(out));
+    });
+    assert.equal(got, `HTTP/1.1 200 Connection Established\r\n\r\n${hello}`);
+  });
+});
+
+test("an admitted tunnel whose ClientHello names another site, hides its name or is not TLS is closed before anything is passed on", async () => {
+  await withProxy(["chatgpt.com"], async ({ socket, tunnels }) => {
+    const connect = "CONNECT chatgpt.com:443 HTTP/1.1\r\n\r\n";
+    for (const send of [clientHello("attacker.example"), clientHello("chatgpt.com", { ech: true }), clientHello(null, { sni: false }), "GET / HTTP/1.1\r\nHost: github.com\r\n\r\n"]) {
+      // Nothing comes back from the echo server: the hello never reached it.
+      assert.equal(await exchange(socket, connect, { send }), "HTTP/1.1 200 Connection Established\r\n\r\n");
+    }
+    assert.deepEqual(tunnels.filter((t) => !t.allowed).map(({ reason, tls_name }) => [reason, tls_name]), [
+      ["tls_name_mismatch", "attacker.example"],
+      ["encrypted_client_hello", undefined],
+      ["no_tls_name", undefined],
+      ["not_tls", undefined],
+    ]);
   });
 });
 

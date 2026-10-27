@@ -28,6 +28,59 @@ export const ALLOWED_PORTS = [443];
 
 const MAX_HEADER_BYTES = 8192;
 
+// The most of a TLS ClientHello the proxy waits for before it gives up on finding the server name.
+const MAX_HELLO_BYTES = 65536;
+
+/**
+ * The server name a TLS ClientHello asks for, from the first bytes a client sends into a tunnel.
+ * A CONNECT name alone does not fix where an encrypted tunnel ends up: a provider behind a shared
+ * HTTPS edge would route a ClientHello naming another site to that site. So the proxy reads the name
+ * the client puts in the hello and admits the tunnel only if it is the host it asked for. Encrypted
+ * Client Hello hides the real name, so a hello offering it is refused.
+ * @param {Buffer} buf what the client has sent so far
+ * @returns {{status: "incomplete"} | {status: "ok", name: string} | {status: "bad", reason: string}}
+ */
+export function tlsServerName(buf) {
+  // The handshake message can span records; gather their payloads until it is whole.
+  let hs = Buffer.alloc(0);
+  let at = 0;
+  for (;;) {
+    if (buf.length < at + 5) return buf.length > MAX_HELLO_BYTES ? { status: "bad", reason: "not_tls" } : { status: "incomplete" };
+    if (buf[at] !== 0x16 || buf[at + 1] !== 0x03) return { status: "bad", reason: "not_tls" };
+    const len = buf.readUInt16BE(at + 3);
+    if (buf.length < at + 5 + len) return at + 5 + len > MAX_HELLO_BYTES ? { status: "bad", reason: "not_tls" } : { status: "incomplete" };
+    hs = Buffer.concat([hs, buf.subarray(at + 5, at + 5 + len)]);
+    at += 5 + len;
+    if (hs.length >= 4) {
+      if (hs[0] !== 0x01) return { status: "bad", reason: "not_tls" };
+      if (hs.length >= 4 + hs.readUIntBE(1, 3)) break;
+    }
+  }
+  const body = hs.subarray(4, 4 + hs.readUIntBE(1, 3));
+  try {
+    let p = 2 + 32;
+    p += 1 + body[p];
+    p += 2 + body.readUInt16BE(p);
+    p += 1 + body[p];
+    const end = p + 2 + body.readUInt16BE(p);
+    if (end > body.length) return { status: "bad", reason: "not_tls" };
+    p += 2;
+    let name = null;
+    while (p + 4 <= end) {
+      const type = body.readUInt16BE(p);
+      const len = body.readUInt16BE(p + 2);
+      const data = body.subarray(p + 4, p + 4 + len);
+      if (data.length !== len) return { status: "bad", reason: "not_tls" };
+      if (type === 0xfe0d) return { status: "bad", reason: "encrypted_client_hello" };
+      if (type === 0x0000 && data.length >= 5 && data[2] === 0x00) name = data.subarray(5, 5 + data.readUInt16BE(3)).toString("latin1");
+      p += 4 + len;
+    }
+    return name ? { status: "ok", name } : { status: "bad", reason: "no_tls_name" };
+  } catch {
+    return { status: "bad", reason: "not_tls" };
+  }
+}
+
 // A host is allowed when it is on the list, or under a "*.domain" entry (which does not admit the
 // domain itself). Names are compared without case or a trailing dot; an IP literal is allowed only
 // if it is listed as such.
@@ -54,7 +107,8 @@ export function connectTarget(line) {
  * @param {string} options.socket where to listen
  * @param {string[]} options.allow hosts admitted (see hostAllowed)
  * @param {number[]} [options.ports] ports admitted, HTTPS by default
- * @param {(entry: object) => void} [options.onTunnel] told of each tunnel asked for: {at, host, port, allowed, reason?}
+ * @param {(entry: object) => void} [options.onTunnel] told of each tunnel asked for: {at, host, port, allowed, reason?},
+ *   and again when an admitted tunnel is closed because its TLS server name is not that host ({..., tls_name})
  * @param {(port: number, host: string) => import("node:net").Socket} [options.connect] how to reach the host (tests)
  * @returns {Promise<import("node:net").Server>} the listening server
  */
@@ -92,9 +146,29 @@ export function startAllowProxy({ socket, allow, ports = ALLOWED_PORTS, onTunnel
       const upstream = connect(target.port, target.host);
       upstream.once("connect", () => {
         client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-        if (rest.length) upstream.write(rest);
-        upstream.pipe(client);
-        client.pipe(upstream);
+        // Nothing the client sends goes on until its ClientHello names the host it asked for.
+        let hello = rest;
+        const check = () => {
+          const found = tlsServerName(hello);
+          if (found.status === "incomplete") return false;
+          client.off("data", onHello);
+          const name = found.status === "ok" ? found.name.toLowerCase().replace(/\.$/, "") : null;
+          if (name !== target.host.toLowerCase().replace(/\.$/, "")) {
+            onTunnel({ at: new Date().toISOString(), host: target.host, port: target.port, allowed: false, reason: found.status === "ok" ? "tls_name_mismatch" : found.reason, ...(name ? { tls_name: name } : {}) });
+            client.destroy();
+            upstream.destroy();
+            return true;
+          }
+          upstream.write(hello);
+          upstream.pipe(client);
+          client.pipe(upstream);
+          return true;
+        };
+        const onHello = (chunk) => {
+          hello = Buffer.concat([hello, chunk]);
+          check();
+        };
+        if (!check()) client.on("data", onHello);
         client.resume();
       });
       upstream.on("error", () => {
