@@ -214,7 +214,9 @@ function parseArgs(argv, env) {
 // readable directories, with whatever libraries it loads, as the CLI's own install must.
 // mounts ({from, at, writable}) show a directory at another path, as the replay harness does to put
 // its fresh copies where the original stage found its inputs; home overrides the HOME directory.
-export function modelCommand({ cli, cliArgs, hide, readable = [], writable = [], network, mounts = [], home: homeDir }, bwrap = "bwrap", system = SYSTEM_DIRS.filter((dir) => existsSync(dir)), node = process.execPath) {
+// setenv, when given, is set inside the sandbox only (over what bwrap inherits), so variables meant for the
+// CLI never reach the launcher.
+export function modelCommand({ cli, cliArgs, hide, readable = [], writable = [], network, mounts = [], home: homeDir, setenv }, bwrap = "bwrap", system = SYSTEM_DIRS.filter((dir) => existsSync(dir)), node = process.execPath) {
   if (!hide.length) return { file: cli, args: cliArgs };
   const home = homeDir || writable[0] || "/tmp";
   const net = network ? {
@@ -240,6 +242,7 @@ export function modelCommand({ cli, cliArgs, hide, readable = [], writable = [],
       ].sort((a, b) => depth(a.at(-1)) - depth(b.at(-1))).flat(),
       ...net.mounts,
       "--remount-ro", "/",
+      ...Object.entries(setenv || {}).flatMap(([name, value]) => ["--setenv", name, value]),
       "--setenv", "HOME", home,
       ...net.env,
       "--chdir", home,

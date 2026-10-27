@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createReader } from "../decision-map/extract.mjs";
@@ -244,5 +244,29 @@ test("a stage stopped by its timeout leaves no delayed kill armed after it exits
   } finally {
     process.kill = kill;
     rmSync(logs, { recursive: true, force: true });
+  }
+});
+
+test("the recorded environment reaches the stage only, never the launcher of the sandbox", async () => {
+  const f = await fixture();
+  try {
+    // The operator's own PATH finds the launcher; a recorded PATH names a directory with another one.
+    const trusted = join(f.top, "trusted");
+    const recorded = join(f.top, "recorded");
+    mkdirSync(trusted);
+    mkdirSync(recorded);
+    copyFileSync(fakeBwrap, join(trusted, "launcher"));
+    execFileSync("chmod", ["+x", join(trusted, "launcher")]);
+    const marker = join(f.top, "planted-launcher-ran");
+    writeFileSync(join(recorded, "launcher"), `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 });
+    const specFile = join(f.top, "spec.json");
+    writeFileSync(specFile, JSON.stringify(specFor({ command: ["/bin/sh", "-c", 'echo "path=$PATH setting=$STAGE_SETTING"'], env: { STAGE_SETTING: "recorded", PATH: recorded } })));
+    const out = join(f.top, "replay");
+    const result = spawnSync(process.execPath, [harness, "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", out], { encoding: "utf8", env: { ...process.env, PATH: `${trusted}:${process.env.PATH}`, DECISION_MAP_BWRAP: "launcher" } });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(!existsSync(marker));
+    assert.equal(readFileSync(join(out, "logs", "stdout.log"), "utf8"), `path=${recorded} setting=recorded\n`);
+  } finally {
+    rmSync(f.top, { recursive: true, force: true });
   }
 });

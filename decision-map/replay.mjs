@@ -250,7 +250,8 @@ if (isMain) {
   });
   server.unref();
   const sandboxArgs = stageSandbox(spec, dirs, network);
-  const env = { ...modelEnv(spec.passEnv, process.env), ...spec.env };
+  const launcher = modelEnv(spec.passEnv, process.env);
+  const env = { ...launcher, ...spec.env };
   const record = {
     harness: HARNESS,
     checkpoint: bundle.record.id,
@@ -272,10 +273,13 @@ if (isMain) {
     process.stdout.write(`${JSON.stringify({ ok, files_exit: files.status, network_exit: net.status, found }, null, 2)}\n`);
     process.exit(ok ? 0 : 1);
   }
-  const stage = modelCommand(sandboxArgs, bwrap);
+  // The recorded environment goes to the stage only, through bwrap's --setenv. bwrap itself is found
+  // and started with the operator's own variables (and the provider logins the spec names from it), so
+  // a recorded PATH or loader variable cannot choose or alter it.
+  const stage = modelCommand({ ...sandboxArgs, setenv: spec.env }, bwrap);
   record.sandbox = [stage.file, ...stage.args.slice(0, stage.args.indexOf("--"))];
   record.started_at = new Date().toISOString();
-  const result = await runLogged({ ...stage, env }, dirs.logs, spec.timeoutMs);
+  const result = await runLogged({ ...stage, env: launcher }, dirs.logs, spec.timeoutMs);
   record.finished_at = new Date().toISOString();
   record.duration_ms = Date.parse(record.finished_at) - Date.parse(record.started_at);
   record.exit = result.error ? String(result.error.code || result.error) : result.status ?? result.signal;
