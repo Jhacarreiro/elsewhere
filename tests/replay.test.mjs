@@ -235,7 +235,7 @@ test("a stage stopped by its timeout leaves no delayed kill armed after it exits
     try { return kill.call(process, pid, signal); } catch { return false; }
   };
   try {
-    const result = await runLogged({ file: "sh", args: ["-c", 'trap "exit 0" TERM; sleep 30 & wait'], env: process.env }, logs, 200, "", 300);
+    const result = await runLogged({ file: "sh", args: ["-c", 'trap "exit 0" TERM; sleep 30 & wait'], env: process.env }, logs, { timeoutMs: 200, graceMs: 300 });
     settled = true;
     assert.equal(result.timedOut, true);
     // Past the grace period, nothing may signal a group id the system is free to reuse.
@@ -266,6 +266,24 @@ test("the recorded environment reaches the stage only, never the launcher of the
     assert.equal(result.status, 0, result.stderr);
     assert.ok(!existsSync(marker));
     assert.equal(readFileSync(join(out, "logs", "stdout.log"), "utf8"), `path=${recorded} setting=recorded\n`);
+  } finally {
+    rmSync(f.top, { recursive: true, force: true });
+  }
+});
+
+test("a stage that floods its output is cut at the limit, stopped, and fails the replay", async () => {
+  const f = await fixture();
+  try {
+    const specFile = join(f.top, "spec.json");
+    writeFileSync(specFile, JSON.stringify(specFor({ command: ["/bin/sh", "-c", "yes flood; yes err >&2"], max_output_bytes: 4096 })));
+    const out = join(f.top, "replay");
+    const result = spawnSync(process.execPath, [harness, "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", out], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: fakeBwrap } });
+    assert.equal(result.status, 1, result.stderr);
+    const record = JSON.parse(readFileSync(join(out, "replay.json"), "utf8"));
+    assert.deepEqual(record.output, { bytes: 4096, limit: 4096, truncated: true });
+    assert.equal(record.timed_out, false);
+    const kept = readFileSync(join(out, "logs", "stdout.log")).length + readFileSync(join(out, "logs", "stderr.log")).length;
+    assert.equal(kept, 4096);
   } finally {
     rmSync(f.top, { recursive: true, force: true });
   }

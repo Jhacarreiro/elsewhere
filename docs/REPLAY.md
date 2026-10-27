@@ -65,7 +65,8 @@ node decision-map/replay.mjs --bundle <dir> --repository <git-dir> --spec <spec.
 - **Environment.** The variables the run recorded (`env`) are set inside the sandbox only. bwrap is found and started with the operator's own variables and the provider logins the spec names (`pass_env`), so a recorded `PATH` or loader variable cannot choose or alter the sandbox itself.
 - **Network.** A replay always runs behind the [network boundary](#network-boundary). A spec without provider hosts is refused.
 - **Branch.** A control replays the checkpoint unchanged. A branch adds one recorded change (`--change`), a file replaced or appended to in the run or adapter copy before the stage starts. The record keeps the change's hashes before and after.
-- **Record.** `replay.json` holds the checkpoint, commit, branch, command, the names of the variables the stage got, the sandbox, the start, end and duration, the exit status, the proxy's counts, and the known differences, the checkpoint's own plus the spec's. The stage's output and the proxy's log are kept in `logs/`. A second replay into the same directory is refused.
+- **Record.** `replay.json` holds the checkpoint, commit, branch, command, the names of the variables the stage got, the sandbox, the start, end and duration, the exit status, the output's size, the proxy's counts, and the known differences, the checkpoint's own plus the spec's. The stage's output and the proxy's log are kept in `logs/`. A second replay into the same directory is refused.
+- **Output.** The stage's output goes to its logs through the harness, which counts it. Past `max_output_bytes` (64 MiB by default, both streams together) the rest is dropped, the stage is stopped as on a timeout, and the record says the output was cut. A replay that timed out or was cut fails. What the stage writes to its writable copies is not counted.
 - **Probe.** `--probe` runs the sandbox adapter's probe with the same mounts and boundary instead of the stage.
 
 The spec:
@@ -85,6 +86,7 @@ The spec:
   "readable": ["/where/the/clis/are/installed"],
   "allow_hosts": ["provider.example"],
   "timeout_seconds": 14400,
+  "max_output_bytes": 67108864,
   "known_differences": [{ "subject": "adapter version", "recorded": null, "replay": "...", "note": "..." }]
 }
 ```

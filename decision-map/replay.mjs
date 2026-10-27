@@ -21,7 +21,7 @@
 //   { "command": [argv...], "env": { recorded variables }, "pass_env": [names taken from here],
 //     "home": "/path", "mounts": [{ "at": "/path", "from": "worktree|run|adapter|home", "writable": bool }],
 //     "hide": [...], "readable": [...], "allow_hosts": [...], "timeout_seconds": n,
-//     "known_differences": [{ "subject", "recorded", "replay", "note" }] }
+//     "max_output_bytes": n, "known_differences": [{ "subject", "recorded", "replay", "note" }] }
 //
 // A branch is the checkpoint plus one recorded change (--change): { "root": "run|adapter",
 // "pointer": "...", "mode": "replace|append", "content_file": "/path", "note": "..." }, applied to the
@@ -31,7 +31,7 @@
 // of the stage, so the isolation can be proven before any model runs.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { assessCheckpoint } from "./checkpoint.mjs";
@@ -147,6 +147,7 @@ export function readSpec(spec) {
     readable: (spec.readable || []).map((d) => resolve(d)),
     allow: spec.allow_hosts,
     timeoutMs: (Number(spec.timeout_seconds) > 0 ? Number(spec.timeout_seconds) : 4 * 3600) * 1000,
+    maxOutputBytes: Number(spec.max_output_bytes) > 0 ? Number(spec.max_output_bytes) : DEFAULT_MAX_OUTPUT_BYTES,
     knownDifferences: spec.known_differences || [],
   };
 }
@@ -169,19 +170,46 @@ function killGroup(pid, signal) {
   }
 }
 
-export function runLogged({ file, args, env }, logs, timeoutMs, name = "", graceMs = 30000) {
+// The stage's output goes to its logs through the harness, which counts it: past maxOutputBytes (both
+// streams together) the rest is dropped and the stage is stopped as on a timeout, so a stage that
+// floods its output cannot fill the operator's disk.
+export const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+
+export function runLogged({ file, args, env }, logs, { timeoutMs, name = "", graceMs = 30000, maxOutputBytes = DEFAULT_MAX_OUTPUT_BYTES }) {
   return new Promise((done) => {
     const out = openSync(join(logs, `${name}stdout.log`), "wx", 0o600);
     const err = openSync(join(logs, `${name}stderr.log`), "wx", 0o600);
-    const child = spawn(file, args, { stdio: ["ignore", out, err], detached: true, env });
+    const child = spawn(file, args, { stdio: ["ignore", "pipe", "pipe"], detached: true, env });
     let timedOut = false;
+    let truncated = false;
+    let written = 0;
     let killTimer = null;
-    const timer = setTimeout(() => {
-      timedOut = true;
+    const stop = () => {
+      if (killTimer) return;
       killGroup(child.pid, "SIGTERM");
       killTimer = setTimeout(() => killGroup(child.pid, "SIGKILL"), graceMs);
       killTimer.unref();
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      stop();
     }, timeoutMs);
+    const keep = (fd) => (chunk) => {
+      const room = maxOutputBytes - written;
+      if (chunk.length > room) {
+        if (room > 0) writeSync(fd, chunk, 0, room);
+        written = maxOutputBytes;
+        if (!truncated) {
+          truncated = true;
+          stop();
+        }
+        return;
+      }
+      writeSync(fd, chunk);
+      written += chunk.length;
+    };
+    child.stdout?.on("data", keep(out));
+    child.stderr?.on("data", keep(err));
     // A child that cannot start emits both error and close; the outcome is settled once.
     let settled = false;
     const finish = (status, signal, error) => {
@@ -193,7 +221,7 @@ export function runLogged({ file, args, env }, logs, timeoutMs, name = "", grace
       closeSync(out);
       closeSync(err);
       if (child.pid) killGroup(child.pid, "SIGKILL");
-      done({ status, signal, error, timedOut });
+      done({ status, signal, error, timedOut, truncated, outputBytes: written });
     };
     child.on("error", (error) => finish(null, null, error));
     child.on("close", (status, signal) => finish(status, signal, null));
@@ -264,11 +292,11 @@ if (isMain) {
     known_differences: [...(bundle.record.known_differences || []), ...spec.knownDifferences],
   };
   if (args.probe) {
-    const files = await runLogged({ ...modelCommand(probeCommand(sandboxArgs), bwrap), env: modelEnv([], process.env) }, dirs.logs, 60000, "probe-files-");
+    const files = await runLogged({ ...modelCommand(probeCommand(sandboxArgs), bwrap), env: modelEnv([], process.env) }, dirs.logs, { timeoutMs: 60000, name: "probe-files-" });
     const check = networkProbeCommand({ ...sandboxArgs, allow: spec.allow, deny: ["github.com"] });
-    const net = await runLogged({ ...modelCommand(check, bwrap), env: modelEnv([], process.env) }, dirs.logs, 60000, "probe-network-");
+    const net = await runLogged({ ...modelCommand(check, bwrap), env: modelEnv([], process.env) }, dirs.logs, { timeoutMs: 60000, name: "probe-network-" });
     const found = ["probe-files-", "probe-network-"].flatMap((name) => readFileSync(join(dirs.logs, `${name}stdout.log`), "utf8").split("\n")).filter(Boolean);
-    const ok = files.status === 0 && !files.timedOut && net.status === 0 && !net.timedOut;
+    const ok = [files, net].every((r) => r.status === 0 && !r.timedOut && !r.truncated);
     writeFileSync(join(args.out, "probe.json"), `${JSON.stringify({ ...record, files_exit: files.status, network_exit: net.status, timed_out: files.timedOut || net.timedOut, found, tunnels, refused, closed_at_tls: closedAtTls, ok }, null, 2)}\n`, { mode: 0o600 });
     process.stdout.write(`${JSON.stringify({ ok, files_exit: files.status, network_exit: net.status, found }, null, 2)}\n`);
     process.exit(ok ? 0 : 1);
@@ -279,13 +307,14 @@ if (isMain) {
   const stage = modelCommand({ ...sandboxArgs, setenv: spec.env }, bwrap);
   record.sandbox = [stage.file, ...stage.args.slice(0, stage.args.indexOf("--"))];
   record.started_at = new Date().toISOString();
-  const result = await runLogged({ ...stage, env: launcher }, dirs.logs, spec.timeoutMs);
+  const result = await runLogged({ ...stage, env: launcher }, dirs.logs, { timeoutMs: spec.timeoutMs, maxOutputBytes: spec.maxOutputBytes });
   record.finished_at = new Date().toISOString();
   record.duration_ms = Date.parse(record.finished_at) - Date.parse(record.started_at);
   record.exit = result.error ? String(result.error.code || result.error) : result.status ?? result.signal;
   record.timed_out = result.timedOut;
+  record.output = { bytes: result.outputBytes, limit: spec.maxOutputBytes, truncated: result.truncated };
   record.tunnels = { asked: tunnels, refused, closed_at_tls: closedAtTls, log: "logs/tunnels.jsonl" };
   writeFileSync(join(args.out, "replay.json"), `${JSON.stringify(record, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-  process.stdout.write(`${JSON.stringify({ exit: record.exit, timed_out: record.timed_out, duration_ms: record.duration_ms, tunnels: record.tunnels }, null, 2)}\n`);
-  process.exit(record.exit === 0 && !record.timed_out ? 0 : 1);
+  process.stdout.write(`${JSON.stringify({ exit: record.exit, timed_out: record.timed_out, output: record.output, duration_ms: record.duration_ms, tunnels: record.tunnels }, null, 2)}\n`);
+  process.exit(record.exit === 0 && !record.timed_out && !result.truncated ? 0 : 1);
 }
