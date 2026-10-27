@@ -181,6 +181,8 @@ test("a replay records its branch, exit, duration and logs, and the stage gets t
     assert.equal(record.commit, f.base);
     assert.equal(record.known_differences[0].subject, "adapter version");
     assert.ok(record.env.includes("STAGE_SETTING") && record.duration_ms >= 0);
+    assert.deepEqual({ ...record.tunnels, limits: undefined }, { asked: 0, refused: 0, closed_at_tls: 0, dropped: 0, bytes: 0, limits: undefined, byte_limit_hit: false, log: "logs/tunnels.jsonl", log_truncated: false });
+    assert.equal(record.tunnels.limits.max_connections, 64);
     assert.equal(readFileSync(join(out, "logs", "stdout.log"), "utf8"), "stage-ran recorded\n");
     // A second replay into the same directory is refused rather than mixing two outcomes.
     const again = spawnSync(process.execPath, [harness, "--no-limits", "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", out], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: fakeBwrap } });

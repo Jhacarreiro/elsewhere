@@ -63,7 +63,7 @@ node decision-map/replay.mjs --bundle <dir> --repository <git-dir> --spec <spec.
 - **Fresh copies,** under `--out`, which must be outside the repository and the run and adapter roots. `worktree/` is a new repository that holds the checkpoint's commit and its history, fetched by id. It has no remote and no refs, so no later commit, tag or branch is in it. `run/` and `adapter/` hold the checkpoint's inputs at their pointers and nothing else. `home/` starts empty. The repository is only read from.
 - **Original paths.** The stage's prompt and configuration name the paths the run used (its project checkout, its run directory, the adapter's state directory, its home). The spec mounts each copy at the path it replaces, so those recorded inputs stay byte for byte as they were. The sandbox is the [sandbox adapter's](../decision-map/prompt-command.mjs): system directories and the spec's readable ones, read-only; the spec's hidden directories empty; the copies over them.
 - **Environment.** The variables the run recorded (`env`) are set inside the sandbox only. bwrap is found and started with the operator's own variables and the provider logins the spec names (`pass_env`), so a recorded `PATH` or loader variable cannot choose or alter the sandbox itself.
-- **Network.** A replay always runs behind the [network boundary](#network-boundary). A spec without provider hosts is refused.
+- **Network.** A replay always runs behind the [network boundary](#network-boundary). A spec without provider hosts is refused. The proxy runs in the harness, outside the stage's cgroup, so it holds the stage to its own limits: 64 connections at once, 10 seconds to send a CONNECT and its ClientHello, 10 minutes idle for a tunnel, and 4 GiB through all tunnels together, or the spec's `proxy_limits`. A connection past one of them is closed and logged; past the byte limit every tunnel is closed and the replay fails. The tunnel log keeps its first 10000 entries, and the record counts the rest.
 - **Branch.** A control replays the checkpoint unchanged. A branch adds one recorded change (`--change`), a file replaced or appended to in the run or adapter copy before the stage starts. The record keeps the change's hashes before and after.
 - **Record.** `replay.json` holds the checkpoint, commit, branch, command, the names of the variables the stage got, the sandbox, the start, end and duration, the exit status, the output's size, the disk space used, the proxy's counts, and the known differences, the checkpoint's own plus the spec's. The stage's output and the proxy's log are kept in `logs/`. A second replay into the same directory is refused.
 - **Output.** The stage's output goes to its logs through the harness, which counts it. Past `max_output_bytes` (64 MiB by default, both streams together) the rest is dropped, the stage is stopped as on a timeout, and the record says the output was cut. A replay that timed out or was cut fails.
@@ -94,6 +94,7 @@ The spec:
   "min_free_bytes": 2147483648,
   "max_files": 1000000,
   "limits": { "pids": 4096, "memory_bytes": 8589934592, "cpus": 2 },
+  "proxy_limits": { "max_connections": 64, "handshake_timeout_ms": 10000, "idle_timeout_ms": 600000, "max_bytes": 4294967296 },
   "known_differences": [{ "subject": "adapter version", "recorded": null, "replay": "...", "note": "..." }]
 }
 ```

@@ -22,7 +22,9 @@
 //     "home": "/path", "mounts": [{ "at": "/path", "from": "worktree|run|adapter|home", "writable": bool }],
 //     "hide": [...], "readable": [...], "allow_hosts": [...], "timeout_seconds": n,
 //     "max_output_bytes": n, "max_write_bytes": n, "min_free_bytes": n, "max_files": n,
-//     "limits": { "pids": n, "memory_bytes": n, "cpus": n }, "known_differences": [{ "subject", "recorded", "replay", "note" }] }
+//     "limits": { "pids": n, "memory_bytes": n, "cpus": n },
+//     "proxy_limits": { "max_connections": n, "handshake_timeout_ms": n, "idle_timeout_ms": n, "max_bytes": n },
+//     "known_differences": [{ "subject", "recorded", "replay", "note" }] }
 //
 // A branch is the checkpoint plus one recorded change (--change): { "root": "run|adapter",
 // "pointer": "...", "mode": "replace|append", "content_file": "/path", "note": "..." }, applied to the
@@ -36,7 +38,7 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { assessCheckpoint } from "./checkpoint.mjs";
-import { startAllowProxy } from "./net-allow.mjs";
+import { PROXY_LIMITS, startAllowProxy } from "./net-allow.mjs";
 import { modelCommand, modelEnv, networkProbeCommand, probeCommand } from "./prompt-command.mjs";
 
 export const HARNESS = { name: "elsewhere-replay-harness", version: "0.1.0" };
@@ -120,6 +122,7 @@ function applyChange(dirs, change) {
 // files of its tree, the run and adapter inputs and the recorded change. More than maxWriteBytes in
 // all, more than maxFiles files, or less than minFreeBytes left afterwards, and nothing is written.
 export const DEFAULT_MAX_FILES = 1_000_000;
+const MAX_TUNNEL_LOG = 10_000;
 
 // A partial clone fetches the objects it lacks from its promisor remote as soon as a command needs
 // them, into the source and over the host's network. Such a source is checked with --missing=print,
@@ -208,6 +211,7 @@ export function readSpec(spec) {
     minFreeBytes: Number(spec.min_free_bytes) > 0 ? Number(spec.min_free_bytes) : DEFAULT_MIN_FREE_BYTES,
     maxFiles: Number(spec.max_files) > 0 ? Number(spec.max_files) : DEFAULT_MAX_FILES,
     limits: { ...DEFAULT_LIMITS, ...(spec.limits || {}) },
+    proxyLimits: { ...PROXY_LIMITS, ...(spec.proxy_limits || {}) },
     knownDifferences: spec.known_differences || [],
   };
 }
@@ -436,20 +440,26 @@ if (isMain) {
   process.on("exit", () => rmSync(socketDir, { recursive: true, force: true }));
   const network = { socket: join(socketDir, "proxy.sock") };
   const tunnelLog = join(dirs.logs, "tunnels.jsonl");
-  // Tunnels asked for, those refused at once, and admitted ones closed later for their TLS server name.
+  // Tunnels asked for, those refused at once, admitted ones closed later for their TLS server name, and
+  // connections the proxy dropped for its limits. The log keeps the first MAX_TUNNEL_LOG entries only, so
+  // a stage that keeps reconnecting cannot grow it without bound; the counts go on.
   let tunnels = 0;
   let refused = 0;
   let closedAtTls = 0;
+  let dropped = 0;
+  let logged = 0;
   const server = await startAllowProxy({
     socket: network.socket,
     allow: spec.allow,
+    limits: spec.proxyLimits,
     onTunnel: (entry) => {
       if (entry.stage === "tls") closedAtTls += 1;
+      else if (entry.stage === "limit") dropped += 1;
       else {
         tunnels += 1;
         if (!entry.allowed) refused += 1;
       }
-      appendFileSync(tunnelLog, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+      if (logged++ < MAX_TUNNEL_LOG) appendFileSync(tunnelLog, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
     },
   });
   server.unref();
@@ -473,7 +483,7 @@ if (isMain) {
     const net = await runLogged({ ...modelCommand(check, bwrap), env: modelEnv([], process.env) }, dirs.logs, { timeoutMs: 60000, name: "probe-network-" });
     const found = ["probe-files-", "probe-network-"].flatMap((name) => readFileSync(join(dirs.logs, `${name}stdout.log`), "utf8").split("\n")).filter(Boolean);
     const ok = [files, net].every((r) => r.status === 0 && !r.timedOut && !r.truncated);
-    writeFileSync(join(args.out, "probe.json"), `${JSON.stringify({ ...record, files_exit: files.status, network_exit: net.status, timed_out: files.timedOut || net.timedOut, found, tunnels, refused, closed_at_tls: closedAtTls, ok }, null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(join(args.out, "probe.json"), `${JSON.stringify({ ...record, files_exit: files.status, network_exit: net.status, timed_out: files.timedOut || net.timedOut, found, tunnels, refused, closed_at_tls: closedAtTls, dropped, ok }, null, 2)}\n`, { mode: 0o600 });
     process.stdout.write(`${JSON.stringify({ ok, files_exit: files.status, network_exit: net.status, found }, null, 2)}\n`);
     process.exit(ok ? 0 : 1);
   }
@@ -507,8 +517,9 @@ if (isMain) {
   record.timed_out = result.timedOut;
   record.output = { bytes: result.outputBytes, limit: spec.maxOutputBytes, truncated: result.truncated };
   record.disk = { used_bytes: result.diskUsedBytes, max_write_bytes: spec.maxWriteBytes, min_free_bytes: spec.minFreeBytes, stopped: result.diskStopped };
-  record.tunnels = { asked: tunnels, refused, closed_at_tls: closedAtTls, log: "logs/tunnels.jsonl" };
+  const usage = server.usage();
+  record.tunnels = { asked: tunnels, refused, closed_at_tls: closedAtTls, dropped, bytes: usage.bytes, limits: spec.proxyLimits, byte_limit_hit: usage.byte_limit_hit, log: "logs/tunnels.jsonl", log_truncated: logged > MAX_TUNNEL_LOG };
   writeFileSync(join(args.out, "replay.json"), `${JSON.stringify(record, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   process.stdout.write(`${JSON.stringify({ exit: record.exit, timed_out: record.timed_out, output: record.output, duration_ms: record.duration_ms, tunnels: record.tunnels }, null, 2)}\n`);
-  process.exit(record.exit === 0 && !record.timed_out && !result.truncated && !result.diskStopped && !result.limitHit ? 0 : 1);
+  process.exit(record.exit === 0 && !record.timed_out && !result.truncated && !result.diskStopped && !result.limitHit && !usage.byte_limit_hit ? 0 : 1);
 }
