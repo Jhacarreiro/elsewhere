@@ -107,6 +107,24 @@ test("materializing gives a worktree with only the checkpoint's commit and a run
   }
 });
 
+test("a checkpoint from a SHA-256 repository is materialized in that object format", async () => {
+  const top = mkdtempSync(join(tmpdir(), "elsewhere-replay-sha256-"));
+  try {
+    const repo = join(top, "repo");
+    mkdirSync(repo);
+    gitIn(repo, "init", "-q", "--object-format=sha256");
+    writeFileSync(join(repo, "a.txt"), "base\n");
+    gitIn(repo, "add", ".");
+    commit(repo, "base");
+    const base = gitIn(repo, "rev-parse", "HEAD");
+    assert.equal(base.length, 64);
+    const { dirs } = materialize({ bundle: { commit: base, copies: [] }, repository: repo, out: join(top, "replay") });
+    assert.equal(gitIn(dirs.worktree, "rev-parse", "HEAD"), base);
+  } finally {
+    rmSync(top, { recursive: true, force: true });
+  }
+});
+
 const specFor = (over = {}) => ({
   command: ["sh", "-c", "echo stage-ran; exit 3"],
   env: { STAGE_SETTING: "recorded" },

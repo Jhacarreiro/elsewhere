@@ -114,7 +114,8 @@ export function materialize({ bundle, repository, out, roots = [], change = null
   const dirs = Object.fromEntries(["worktree", "run", "adapter", "home", "logs"].map((name) => [name, join(target, name)]));
   for (const dir of Object.values(dirs)) mkdirSync(dir, { mode: 0o700 });
   // Only the commit and its history: no remote to push to or fetch from, no refs past it.
-  git(["init", "-q"], dirs.worktree);
+  // In the source's own object format, so a SHA-256 commit id can be fetched.
+  git(["init", "-q", `--object-format=${git(["rev-parse", "--show-object-format"], resolve(repository))}`], dirs.worktree);
   git(["fetch", "-q", "--no-tags", "--no-write-fetch-head", resolve(repository), bundle.commit], dirs.worktree);
   git(["-c", "advice.detachedHead=false", "checkout", "-q", "--detach", bundle.commit], dirs.worktree);
   if (git(["rev-parse", "HEAD"], dirs.worktree) !== bundle.commit) throw new Error("the worktree is not at the checkpoint's commit");
