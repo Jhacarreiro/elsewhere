@@ -30,16 +30,16 @@ test("the allowlist admits listed hosts and subdomains under a wildcard entry, n
 
 // A proxy on a unix socket whose "outside" is a local echo server, whatever host is asked for, so the
 // tests reach no real host.
-async function withProxy(allow, fn, ports) {
+async function withProxy(allow, fn, ports, limits) {
   const dir = mkdtempSync(join(tmpdir(), "net-allow-"));
   const echo = net.createServer((s) => s.pipe(s));
   await new Promise((done) => echo.listen(0, "127.0.0.1", done));
   const echoPort = echo.address().port;
   const tunnels = [];
   const socket = join(dir, "proxy.sock");
-  const server = await startAllowProxy({ socket, allow, ports: ports || [443], onTunnel: (e) => tunnels.push(e), connect: () => net.connect(echoPort, "127.0.0.1") });
+  const server = await startAllowProxy({ socket, allow, ports: ports || [443], onTunnel: (e) => tunnels.push(e), limits, connect: () => net.connect(echoPort, "127.0.0.1") });
   try {
-    await fn({ socket, tunnels });
+    await fn({ socket, tunnels, server });
   } finally {
     server.close();
     echo.close();
@@ -70,19 +70,20 @@ function clientHello(name, { ech = false, record = 16384, sni = true } = {}) {
 
 // Sends <request>, then <send> once the tunnel is up, and returns everything that came back: the
 // echo server behind the proxy returns what reaches it.
-function exchange(connectTo, request, { send } = {}) {
+function exchange(connectTo, request, { send, keepOpen = false } = {}) {
   return new Promise((done, fail) => {
     const s = net.connect(connectTo);
     let got = "";
     let sent = send;
-    s.on("error", fail);
+    // A tunnel the proxy cuts may end in a reset; what came back before it is the answer.
+    s.on("error", keepOpen ? () => {} : fail);
     s.on("connect", () => s.write(Buffer.from(request, "latin1")));
     s.on("data", (d) => {
       got += d.toString("latin1");
       if (sent && got.includes("\r\n\r\n") && got.startsWith("HTTP/1.1 200")) {
         s.write(Buffer.from(sent, "latin1"));
         sent = null;
-      } else if (!sent && send && got.endsWith(send)) s.end();
+      } else if (!sent && send && !keepOpen && got.endsWith(send)) s.end();
     });
     s.on("close", () => done(got));
   });
@@ -117,6 +118,44 @@ test("the proxy tunnels to an allowed host, refuses others and anything but CONN
   });
 });
 
+// Opens a connection to the proxy, writes <data> and resolves with the time it took to close.
+function heldOpen(socket, data = "") {
+  return new Promise((done) => {
+    const started = Date.now();
+    const s = net.connect(socket);
+    s.on("connect", () => data && s.write(Buffer.from(data, "latin1")));
+    s.on("data", () => {});
+    s.on("error", () => {});
+    s.on("close", () => done(Date.now() - started));
+  });
+}
+
+test("the proxy caps connections at once, half-sent handshakes, idle tunnels and bytes", async () => {
+  const limits = { max_connections: 3, handshake_timeout_ms: 300, idle_timeout_ms: 300, max_bytes: 64 * 1024 };
+  await withProxy(["api.anthropic.com"], async ({ socket, tunnels, server }) => {
+    // Three half-sent CONNECTs fill the proxy; a fourth connection is dropped at once.
+    const held = [heldOpen(socket, "CONNECT api.anth"), heldOpen(socket, "CONNECT api.anth"), heldOpen(socket, "CONNECT api.anth")];
+    await new Promise((r) => setTimeout(r, 50));
+    assert.ok(await heldOpen(socket) < 250);
+    // The three are closed once the handshake time runs out.
+    for (const ms of await Promise.all(held)) assert.ok(ms >= 250 && ms < 2000, `closed after ${ms} ms`);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(server.usage().open, 0);
+    // An admitted tunnel with nothing going either way is closed once idle.
+    const hello = clientHello("api.anthropic.com");
+    assert.equal(await exchange(socket, "CONNECT api.anthropic.com:443 HTTP/1.1\r\n\r\n", { send: hello, keepOpen: true }), `HTTP/1.1 200 Connection Established\r\n\r\n${hello}`);
+    // Past the byte limit every tunnel is closed and no new connection is taken.
+    const flood = `${hello}${"x".repeat(80 * 1024)}`;
+    const got = await exchange(socket, "CONNECT api.anthropic.com:443 HTTP/1.1\r\n\r\n", { send: flood, keepOpen: true });
+    assert.ok(got.length < flood.length);
+    assert.equal(server.usage().byte_limit_hit, true);
+    assert.ok(await heldOpen(socket, "CONNECT api.anthropic.com:443 HTTP/1.1\r\n\r\n") < 250);
+    const reasons = tunnels.filter((t) => t.stage === "limit").map((t) => t.reason);
+    assert.deepEqual(reasons.slice(0, 5), ["too_many_connections", "handshake_timeout", "handshake_timeout", "handshake_timeout", "idle_timeout"]);
+    assert.deepEqual(reasons.slice(5), ["byte_limit", "byte_limit"]);
+  }, undefined, limits);
+});
+
 test("a ClientHello sent right after the CONNECT header, or in pieces, reaches the tunnel", async () => {
   await withProxy(["api.anthropic.com"], async ({ socket }) => {
     const hello = clientHello("api.anthropic.com", { record: 30 });
@@ -145,6 +184,7 @@ test("an admitted tunnel whose ClientHello names another site, hides its name or
       // Nothing comes back from the echo server: the hello never reached it.
       assert.equal(await exchange(socket, connect, { send }), "HTTP/1.1 200 Connection Established\r\n\r\n");
     }
+    assert.ok(tunnels.filter((t) => !t.allowed).every((t) => t.stage === "tls") && tunnels.filter((t) => t.allowed).every((t) => t.stage === undefined));
     assert.deepEqual(tunnels.filter((t) => !t.allowed).map(({ reason, tls_name }) => [reason, tls_name]), [
       ["tls_name_mismatch", "attacker.example"],
       ["encrypted_client_hello", undefined],

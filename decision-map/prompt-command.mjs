@@ -57,7 +57,7 @@
 // running and nothing kept. The model runs in its own process group, and the whole group is stopped,
 // so a CLI that forks the real model leaves nothing running into the next decision.
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -212,9 +212,13 @@ function parseArgs(argv, env) {
 // no network of its own and the CLI runs behind the forwarder to the proxy's socket. The forwarder is
 // shown read-only wherever it is; the node that runs it (this command's own) must be in the system or
 // readable directories, with whatever libraries it loads, as the CLI's own install must.
-export function modelCommand({ cli, cliArgs, hide, readable = [], writable = [], network }, bwrap = "bwrap", system = SYSTEM_DIRS.filter((dir) => existsSync(dir)), node = process.execPath) {
+// mounts ({from, at, writable}) show a directory at another path, as the replay harness does to put
+// its fresh copies where the original stage found its inputs; home overrides the HOME directory.
+// setenv, when given, is set inside the sandbox only (over what bwrap inherits), so variables meant for the
+// CLI never reach the launcher.
+export function modelCommand({ cli, cliArgs, hide, readable = [], writable = [], network, mounts = [], home: homeDir, setenv }, bwrap = "bwrap", system = SYSTEM_DIRS.filter((dir) => existsSync(dir)), node = process.execPath) {
   if (!hide.length) return { file: cli, args: cliArgs };
-  const home = writable[0] || "/tmp";
+  const home = homeDir || writable[0] || "/tmp";
   const net = network ? {
     mounts: [dirname(network.socket), ...(readable.includes(NET_ALLOW) ? [] : [NET_ALLOW])].flatMap((path) => ["--ro-bind", path, path]),
     env: Object.entries(proxyEnv(SANDBOX_PROXY_PORT)).flatMap(([name, value]) => ["--setenv", name, value]),
@@ -234,13 +238,17 @@ export function modelCommand({ cli, cliArgs, hide, readable = [], writable = [],
         ...readable.map((dir) => ["--ro-bind", dir, dir]),
         ...writable.map((dir) => ["--bind", dir, dir]),
         ...hide.map((dir) => ["--tmpfs", dir]),
+        ...mounts.map((m) => [m.writable ? "--bind" : "--ro-bind", m.from, m.at]),
       ].sort((a, b) => depth(a.at(-1)) - depth(b.at(-1))).flat(),
       ...net.mounts,
       "--remount-ro", "/",
+      ...Object.entries(setenv || {}).flatMap(([name, value]) => ["--setenv", name, value]),
       "--setenv", "HOME", home,
       ...net.env,
       "--chdir", home,
-      "--unshare-pid", "--die-with-parent",
+      // Its own process, IPC and host-name namespaces: no signals to host processes, no System V
+      // queues, segments or semaphores shared with them or left behind after it.
+      "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--die-with-parent",
       ...(network ? ["--unshare-net"] : []),
       "--", ...net.wrap, cli, ...cliArgs,
     ],
@@ -250,13 +258,15 @@ export function modelCommand({ cli, cliArgs, hide, readable = [], writable = [],
 // What may show inside a hidden directory: the mount points of readable, writable or other hidden
 // directories named inside it (the CLI's install inside its state directory, say), by their first
 // name below it.
-export function mountedInside(dir, { readable = [], writable = [], hide = [] }) {
-  return [...new Set([...readable, ...writable, ...hide].filter((d) => d.startsWith(`${dir}/`)).map((d) => d.slice(dir.length + 1).split("/")[0]))];
+export function mountedInside(dir, { readable = [], writable = [], hide = [], mounts = [] }) {
+  return [...new Set([...readable, ...writable, ...hide, ...mounts.map((m) => m.at)].filter((d) => d.startsWith(`${dir}/`)).map((d) => d.slice(dir.length + 1).split("/")[0]))];
 }
 
-// Run in the sandbox by --probe, with each hidden directory and the names that may show in it (one per
-// line), then "--", then the writable ones.
+// Run in the sandbox by --probe, with the host's IPC namespace, then each hidden directory and the
+// names that may show in it (one per line), then "--", then the writable ones.
 const PROBE = `ok=0
+if [ "$(readlink /proc/self/ns/ipc)" = "$1" ]; then echo "ipc_shared"; ok=1; else echo "ipc_private"; fi
+shift
 while [ "$1" != -- ]; do
   if [ -z "$2" ]; then left=$(ls -A "$1"); else left=$(ls -A "$1" | grep -vxF "$2"); fi
   if [ -z "$left" ]; then echo "hidden_empty $1"; else echo "hidden_not_empty $1"; ok=1; fi
@@ -280,14 +290,18 @@ export function sandboxEnvCommand(args, bwrap = "bwrap") {
   return { file: args.cli, args: args.cliArgs, env: { [args.sandboxEnv]: JSON.stringify(sandboxPrefix(args, bwrap)) } };
 }
 
-export function probeCommand({ hide, readable, writable, network }) {
-  const mounts = { readable, writable, hide };
-  return { cli: "sh", cliArgs: ["-c", PROBE, "probe", ...hide.flatMap((dir) => [dir, mountedInside(dir, mounts).join("\n")]), "--", ...writable], hide, readable, writable, network };
+// Writable mounts are checked as writable where they are shown. A hidden directory that a mount
+// replaces outright shows that mount's contents, not the host's, so it is not checked for emptiness.
+export function probeCommand({ hide, readable, writable, network, mounts = [], home }, hostIpc = readlinkSync("/proc/self/ns/ipc")) {
+  const shown = { readable, writable, hide, mounts };
+  const checked = [...writable, ...mounts.filter((m) => m.writable).map((m) => m.at)];
+  const empty = hide.filter((dir) => !mounts.some((m) => m.at === dir));
+  return { cli: "sh", cliArgs: ["-c", PROBE, "probe", hostIpc, ...empty.flatMap((dir) => [dir, mountedInside(dir, shown).join("\n")]), "--", ...checked], hide, readable, writable, network, mounts, home };
 }
 
 // The network half of the probe, run in the same sandbox behind the same forwarder.
-export function networkProbeCommand({ hide, readable, writable, network, allow, deny }, node = process.execPath) {
-  return { cli: node, cliArgs: [NET_ALLOW, "--check", "--port", String(SANDBOX_PROXY_PORT), ...allow.flatMap((h) => ["--allow-host", h]), ...deny.flatMap((h) => ["--deny-host", h])], hide, readable, writable, network };
+export function networkProbeCommand({ hide, readable, writable, network, allow, deny, mounts = [], home }, node = process.execPath) {
+  return { cli: node, cliArgs: [NET_ALLOW, "--check", "--port", String(SANDBOX_PROXY_PORT), ...allow.flatMap((h) => ["--allow-host", h]), ...deny.flatMap((h) => ["--deny-host", h])], hide, readable, writable, network, mounts, home };
 }
 
 // One shell command whose output names what it found line by line, so the model only has to copy

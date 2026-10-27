@@ -28,6 +28,11 @@ export const ALLOWED_PORTS = [443];
 
 const MAX_HEADER_BYTES = 8192;
 
+// What one replay's stage may hold open through the proxy, which runs outside its cgroup: connections
+// at once, time to finish a CONNECT and ClientHello, time a spliced tunnel may sit idle, and bytes
+// through all tunnels together. A connection past one of them is closed.
+export const PROXY_LIMITS = { max_connections: 64, handshake_timeout_ms: 10_000, idle_timeout_ms: 10 * 60_000, max_bytes: 4 * 1024 ** 3 };
+
 // The most of a TLS ClientHello the proxy waits for before it gives up on finding the server name.
 const MAX_HELLO_BYTES = 65536;
 
@@ -108,14 +113,47 @@ export function connectTarget(line) {
  * @param {string[]} options.allow hosts admitted (see hostAllowed)
  * @param {number[]} [options.ports] ports admitted, HTTPS by default
  * @param {(entry: object) => void} [options.onTunnel] told of each tunnel asked for: {at, host, port, allowed, reason?},
- *   and again when an admitted tunnel is closed because its TLS server name is not that host ({..., tls_name})
+ *   and again, with stage "tls", when an admitted tunnel is closed because its TLS server name is not that host ({..., tls_name})
+ *   and with stage "limit" when a connection is dropped for one of the limits below ({at, stage, allowed: false, reason})
+ * @param {object} [options.limits] see PROXY_LIMITS
  * @param {(port: number, host: string) => import("node:net").Socket} [options.connect] how to reach the host (tests)
- * @returns {Promise<import("node:net").Server>} the listening server
+ * @returns {Promise<import("node:net").Server & {usage: () => {bytes: number, byte_limit_hit: boolean, open: number}}>} the listening server
  */
-export function startAllowProxy({ socket, allow, ports = ALLOWED_PORTS, onTunnel = () => {}, connect = (port, host) => net.connect(port, host) }) {
+export function startAllowProxy({ socket, allow, ports = ALLOWED_PORTS, onTunnel = () => {}, limits = {}, connect = (port, host) => net.connect(port, host) }) {
+  const lim = { ...PROXY_LIMITS, ...limits };
+  const open = new Set();
+  let bytes = 0;
+  let spent = false;
+  const dropped = (reason) => onTunnel({ at: new Date().toISOString(), stage: "limit", host: null, port: null, allowed: false, reason });
+  // Bytes both ways through every tunnel; past the limit every connection is closed and no new one taken.
+  const count = (chunk) => {
+    bytes += chunk.length;
+    if (bytes > lim.max_bytes && !spent) {
+      spent = true;
+      dropped("byte_limit");
+      for (const c of open) c.destroy();
+    }
+  };
   const server = net.createServer((client) => {
-    let head = Buffer.alloc(0);
     client.on("error", () => client.destroy());
+    if (spent || open.size >= lim.max_connections) {
+      dropped(spent ? "byte_limit" : "too_many_connections");
+      client.destroy();
+      return;
+    }
+    open.add(client);
+    // Until its tunnel is spliced, a connection has handshake_timeout_ms to send its CONNECT and
+    // ClientHello; after that it is closed once idle_timeout_ms pass with nothing either way.
+    const handshake = setTimeout(() => {
+      dropped("handshake_timeout");
+      client.destroy();
+    }, lim.handshake_timeout_ms);
+    client.on("close", () => {
+      open.delete(client);
+      clearTimeout(handshake);
+    });
+    client.on("data", count);
+    let head = Buffer.alloc(0);
     const refuse = (status, text) => client.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     const onData = (chunk) => {
       head = Buffer.concat([head, chunk]);
@@ -154,12 +192,18 @@ export function startAllowProxy({ socket, allow, ports = ALLOWED_PORTS, onTunnel
           client.off("data", onHello);
           const name = found.status === "ok" ? found.name.toLowerCase().replace(/\.$/, "") : null;
           if (name !== target.host.toLowerCase().replace(/\.$/, "")) {
-            onTunnel({ at: new Date().toISOString(), host: target.host, port: target.port, allowed: false, reason: found.status === "ok" ? "tls_name_mismatch" : found.reason, ...(name ? { tls_name: name } : {}) });
+            onTunnel({ at: new Date().toISOString(), stage: "tls", host: target.host, port: target.port, allowed: false, reason: found.status === "ok" ? "tls_name_mismatch" : found.reason, ...(name ? { tls_name: name } : {}) });
             client.destroy();
             upstream.destroy();
             return true;
           }
+          clearTimeout(handshake);
+          client.setTimeout(lim.idle_timeout_ms, () => {
+            dropped("idle_timeout");
+            client.destroy();
+          });
           upstream.write(hello);
+          upstream.on("data", count);
           upstream.pipe(client);
           client.pipe(upstream);
           return true;
@@ -180,6 +224,7 @@ export function startAllowProxy({ socket, allow, ports = ALLOWED_PORTS, onTunnel
     };
     client.on("data", onData);
   });
+  server.usage = () => ({ bytes, byte_limit_hit: spent, open: open.size });
   return new Promise((done, fail) => {
     server.once("error", fail);
     server.listen(socket, () => {

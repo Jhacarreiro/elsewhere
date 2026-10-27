@@ -1,6 +1,6 @@
 # Isolated replay (Phase 3 step 3)
 
-**Status:** in progress. The network boundary is built and checked on the owner's machine; the harness that materializes a checkpoint and runs a stage in it is not built yet. Nothing here has run a replay.
+**Status:** in progress. The network boundary and the harness are built and checked on the owner's machine with probes and a stage that runs no model. Nothing here has replayed a stage with a model yet.
 
 A replay runs one stage again from an adequate [checkpoint](CHECKPOINT_RECORD.md). It must not see what happened after the decision, through files or through the network. Files are handled by the [sandbox adapter](../decision-map/prompt-command.mjs) from Phase 2: the run, the adapter's state and anything written later are hidden, and the CLI sees only system directories and the ones named readable or writable. This page covers the network.
 
@@ -49,3 +49,69 @@ Two of the refused hosts are leak routes the boundary exists for: the Codex CLI 
 - With `--sandbox-env`, the CLI's trusted start-up runs outside the sandbox, with the network. That start-up is the Development Cycle's Codex bridge, which reads the login and starts the app-server. The model and everything it runs are inside the sandbox.
 - Host names are resolved outside the sandbox, by the proxy. Inside, there is no name resolution at all.
 - The proxy sees the TLS server name, not the HTTP request inside the encrypted tunnel. An edge that routed by the encrypted `Host` header rather than the server name could still be used to reach another site behind it; whether that works depends on the provider's edge, not on the proxy.
+
+## Harness
+
+[`decision-map/replay.mjs`](../decision-map/replay.mjs) runs one stage again from an adequate [checkpoint bundle](CHECKPOINT_RECORD.md#builder):
+
+```sh
+node decision-map/replay.mjs --bundle <dir> --repository <git-dir> --spec <spec.json> --out <dir> \
+  [--run <dir>] [--adapter <dir>] [--change <change.json>] (--cgroup <dir> | --no-limits) [--probe]
+```
+
+- **Bundle.** The harness recomputes the checkpoint's adequacy and checks every copy against the hash the record gives. An inadequate checkpoint or a changed copy is refused.
+- **Fresh copies,** under `--out`, which must be outside the repository and the run and adapter roots. `worktree/` is a new repository that holds the checkpoint's commit and its history, fetched by id. It has no remote and no refs, so no later commit, tag or branch is in it. `run/` and `adapter/` hold the checkpoint's inputs at their pointers and nothing else. `home/` starts empty. The repository is only read from.
+- **Original paths.** The stage's prompt and configuration name the paths the run used (its project checkout, its run directory, the adapter's state directory, its home). The spec mounts each copy at the path it replaces, so those recorded inputs stay byte for byte as they were. The sandbox is the [sandbox adapter's](../decision-map/prompt-command.mjs): system directories and the spec's readable ones, read-only; the spec's hidden directories empty; the copies over them.
+- **Environment.** The variables the run recorded (`env`) are set inside the sandbox only. bwrap is found and started with the operator's own variables and the provider logins the spec names (`pass_env`), so a recorded `PATH` or loader variable cannot choose or alter the sandbox itself.
+- **Namespaces.** The stage runs in its own PID, IPC and host-name namespaces, besides the network one. It cannot signal host processes or reach, or leave behind, System V queues, shared memory segments or semaphores of the operator's user. The probe checks that its IPC namespace is not the harness's and fails if it is.
+- **Network.** A replay always runs behind the [network boundary](#network-boundary). A spec without provider hosts is refused. The proxy runs in the harness, outside the stage's cgroup, so it holds the stage to its own limits: 64 connections at once, 10 seconds to send a CONNECT and its ClientHello, 10 minutes idle for a tunnel, and 4 GiB through all tunnels together, or the spec's `proxy_limits`. A connection past one of them is closed and logged; past the byte limit every tunnel is closed and the replay fails. The tunnel log keeps its first 10000 entries, and the record counts the rest.
+- **Branch.** A control replays the checkpoint unchanged. A branch adds one recorded change (`--change`), a file replaced or appended to in the run or adapter copy before the stage starts. The record keeps the change's hashes before and after.
+- **Record.** `replay.json` holds the checkpoint, commit, branch, command, the names of the variables the stage got, the sandbox, the start, end and duration, the exit status, the output's size, the disk space used, the proxy's counts, and the known differences, the checkpoint's own plus the spec's. The stage's output and the proxy's log are kept in `logs/`. A second replay into the same directory is refused.
+- **Output.** The stage's output goes to its logs through the harness, which counts it. Past `max_output_bytes` (64 MiB by default, both streams together) the rest is dropped, the stage is stopped as on a timeout, and the record says the output was cut. A replay that timed out or was cut fails.
+- **Disk.** What the stage writes to its copies and its home lands on the operator's disk too. The harness checks the free space where `--out` is every second, and stops the stage once it has used more than `max_write_bytes` of it (16 GiB by default) or less than `min_free_bytes` is left (2 GiB). The record gives the space used and whether the stage was stopped for it, and such a replay fails. A fast writer can pass the limit within that second, so for a stage you do not trust, put `--out` on a filesystem with its own size and inode quota. Laying out the copies happens before the stage, so everything it will write is measured first, from the source: the commit's history as the source repository stores it (`git rev-list --objects --disk-usage`), the files of its tree, the run and adapter inputs, and the recorded change. More than `max_write_bytes` in all, more than `max_files` files (a million by default), or less than `min_free_bytes` left afterwards, and the replay is refused before anything is written.
+- **Resource limits.** The stage runs in a cgroup of its own, made under the one passed with `--cgroup` (a cgroup v2 directory delegated to the operator, giving its children the `pids`, `memory` and `cpu` controllers). It caps the stage's processes, memory (with no swap) and CPU, by default 4096 processes, 8 GiB and 2 CPUs, or the spec's `limits`. A stage that reaches its memory or process limit is stopped, the record names the limit, and the replay fails. Without `--cgroup` a replay is refused unless the operator passes `--no-limits`, which the record keeps as a known difference.
+- **Git.** The worktree is laid out on the host, before the sandbox and the proxy exist, so git runs without the operator's system and global configuration and without any `GIT_` variables. A filter or hook named there (Git LFS, say) cannot act on what the commit asks for. A partial clone is not allowed to fetch missing objects from its promisor remote: if the repository lacks any object of the commit's history, the replay is refused before anything is fetched or written.
+- **Probe.** `--probe` runs the sandbox adapter's probe with the same mounts and boundary instead of the stage.
+
+The spec:
+
+```json
+{
+  "command": ["<the stage's argv, as the run recorded it>"],
+  "env": { "SETTING": "as the run recorded it" },
+  "pass_env": ["PROVIDER_LOGIN_VARIABLE"],
+  "home": "/original/home",
+  "mounts": [
+    { "at": "/original/runs/project", "from": "run", "writable": true },
+    { "at": "/original/adapter-state/worktrees/<run>/integration", "from": "worktree", "writable": true },
+    { "at": "/original/adapter-state", "from": "adapter", "writable": true }
+  ],
+  "hide": ["/original/runs", "/original/wiki"],
+  "readable": ["/where/the/clis/are/installed"],
+  "allow_hosts": ["provider.example"],
+  "timeout_seconds": 14400,
+  "max_output_bytes": 67108864,
+  "max_write_bytes": 17179869184,
+  "min_free_bytes": 2147483648,
+  "max_files": 1000000,
+  "limits": { "pids": 4096, "memory_bytes": 8589934592, "cpus": 2 },
+  "proxy_limits": { "max_connections": 64, "handshake_timeout_ms": 10000, "idle_timeout_ms": 600000, "max_bytes": 4294967296 },
+  "known_differences": [{ "subject": "adapter version", "recorded": null, "replay": "...", "note": "..." }]
+}
+```
+
+### Checked on the owner's machine (2026-10-27)
+
+On the baseline run's adequate checkpoint, the start of the implementation pass, with the run's own paths mounted:
+
+- The probe passed. The hidden directories were empty, the root read-only, and the copies and the fresh home writable. Direct connections failed, `github.com` was refused, and the three providers' hosts were admitted.
+- A stage that runs no model listed what it could see. The run directory held only the checkpoint's six run inputs. The previous run's delivery record was not there, though its id is what names the commit. The project checkout was at the checkpoint's commit with no refs at all. The adapter's state held only its routing configuration.
+
+### Before the first replay with a model
+
+These are open, and step 4 cannot start until each is either solved or recorded as a known difference:
+
+- **The project wiki.** It was one of the stage's read roots, and it is a git repository too. The checkpoint holds one repository commit today, so the wiki is hidden. Either the checkpoint names a second commit (the wiki as it was before the decision), or its absence is a known difference.
+- **Provider logins.** Each CLI needs its login inside the sandbox. That means a fresh configuration directory holding only the credential, not the operator's own, which keeps other sessions' history. The Codex bridge reads its login from the agent runtime's state, which the sandbox hides.
+- **Resource limits on the owner's machine.** The agent runtime's container sees its cgroups read-only, so `--cgroup` has nothing to use there yet. The container needs a cgroup delegated to it (a writable cgroup namespace or a delegated systemd scope), which means changing and recreating it, or the replay runs with `--no-limits` and says so.
+- **Recorded configuration that no longer exists.** The recorded `PATH` names a plugin build that has since been replaced. The runner's lifecycle hook reports to local services the sandbox cannot reach. The adapter has been upgraded since the run.

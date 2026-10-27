@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createReader } from "../decision-map/extract.mjs";
@@ -116,6 +116,13 @@ test("the command line reads a run, writes records to stdout and leaves the run 
   const dir = mkdtempSync(join(tmpdir(), "generate-cli-"));
   try {
     cpSync(runFixture, dir, { recursive: true });
+    // The copy writes its files one after another, a few milliseconds apart, so a decision timed by one
+    // copied file would find the files copied before it older. They are all given one time, as if
+    // written at once.
+    const now = new Date();
+    for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
+      if (entry.isFile()) utimesSync(join(entry.parentPath, entry.name), now, now);
+    }
     const out = execFileSync(process.execPath, [new URL("../decision-map/generate.mjs", import.meta.url).pathname, dir, "--", process.execPath, fake], { encoding: "utf8" });
     const records = out.trim().split("\n").map((l) => JSON.parse(l));
     assert.ok(records.length > 0);
