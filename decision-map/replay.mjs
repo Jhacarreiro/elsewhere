@@ -179,7 +179,11 @@ function runLogged({ file, args, env }, logs, timeoutMs, name = "") {
       killGroup(child.pid, "SIGTERM");
       setTimeout(() => killGroup(child.pid, "SIGKILL"), 30000).unref();
     }, timeoutMs);
+    // A child that cannot start emits both error and close; the outcome is settled once.
+    let settled = false;
     const finish = (status, signal, error) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       closeSync(out);
       closeSync(err);

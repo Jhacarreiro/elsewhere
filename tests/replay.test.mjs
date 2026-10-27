@@ -161,6 +161,14 @@ test("a replay records its branch, exit, duration and logs, and the stage gets t
     const again = spawnSync(process.execPath, [harness, "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", out], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: fakeBwrap } });
     assert.notEqual(again.status, 0);
     assert.ok(!existsSync(join(f.run, "replay")));
+    // A sandbox that cannot start still leaves its record.
+    const missing = join(f.top, "replay-missing");
+    const failed = spawnSync(process.execPath, [harness, "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", missing], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: join(f.top, "no-such-bwrap") } });
+    assert.equal(failed.status, 1, failed.stderr);
+    assert.equal(JSON.parse(readFileSync(join(missing, "replay.json"), "utf8")).exit, "ENOENT");
+    const probeMissing = spawnSync(process.execPath, [harness, "--bundle", f.bundle, "--repository", f.repo, "--spec", specFile, "--out", join(f.top, "probe-missing"), "--probe"], { encoding: "utf8", env: { ...process.env, DECISION_MAP_BWRAP: join(f.top, "no-such-bwrap") } });
+    assert.equal(probeMissing.status, 1, probeMissing.stderr);
+    assert.equal(JSON.parse(readFileSync(join(f.top, "probe-missing", "probe.json"), "utf8")).ok, false);
   } finally {
     rmSync(f.top, { recursive: true, force: true });
   }
