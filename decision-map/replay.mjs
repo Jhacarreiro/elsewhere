@@ -32,7 +32,7 @@
 // of the stage, so the isolation can be proven before any model runs.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmdirSync, rmSync, statfsSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmdirSync, rmSync, statfsSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { assessCheckpoint } from "./checkpoint.mjs";
@@ -113,51 +113,52 @@ function applyChange(dirs, change) {
  * Lays out a fresh copy of the checkpoint under out. The repository is only read from.
  * @returns {{dirs: object, change: object|null}}
  */
-// The checkout runs on the host before the stage's disk watch or cgroup exist, so its size is checked
-// first, from the commit's tree: a commit whose files would take more than maxWriteBytes, number more
-// than maxFiles, or leave less than minFreeBytes free is refused before anything is written.
+// Laying out the copies runs on the host before the stage's disk watch or cgroup exist, so everything
+// it will write is measured first, from the source: the commit's history as it is stored there, the
+// files of its tree, the run and adapter inputs and the recorded change. More than maxWriteBytes in
+// all, more than maxFiles files, or less than minFreeBytes left afterwards, and nothing is written.
 export const DEFAULT_MAX_FILES = 1_000_000;
 
-function checkoutFits(worktree, commit, out, { maxWriteBytes, minFreeBytes, maxFiles, free = freeBytes }) {
+function layoutFits({ repository, commit, copies, change, out, maxWriteBytes, minFreeBytes, maxFiles, free = freeBytes }) {
+  const history = Number(git(["rev-list", "--objects", "--disk-usage", commit], repository));
   // Only each entry's size, about ten bytes a file, so the limit's worth of files fits the buffer; a
   // listing too long for it is a tree past the limit anyway.
   let sizes;
   try {
-    sizes = git(["ls-tree", "-r", "-z", "--format=%(objectsize)", commit], worktree, { raw: true, maxBuffer: 32 * Math.max(maxFiles, 1) + 1024 }).split("\0").filter(Boolean);
+    sizes = git(["ls-tree", "-r", "-z", "--format=%(objectsize)", commit], repository, { raw: true, maxBuffer: 32 * Math.max(maxFiles, 1) + 1024 }).split("\0").filter(Boolean);
   } catch (err) {
     if (/ENOBUFS|maxBuffer/.test(err.message)) throw new Error(`the checkpoint's commit has more files than the limit of ${maxFiles}`);
     throw err;
   }
-  const bytes = sizes.reduce((sum, size) => sum + (Number(size) || 0), 0);
-  if (sizes.length > maxFiles) throw new Error(`the checkpoint's commit has ${sizes.length} files, more than the limit of ${maxFiles}`);
-  if (bytes > maxWriteBytes) throw new Error(`the checkpoint's commit holds ${bytes} bytes of files, more than the limit of ${maxWriteBytes}`);
-  if (free(out) - bytes < minFreeBytes) throw new Error(`checking out the checkpoint's commit (${bytes} bytes) would leave less than ${minFreeBytes} bytes free`);
+  const tree = sizes.reduce((sum, size) => sum + (Number(size) || 0), 0);
+  const inputs = copies.reduce((sum, copy) => sum + statSync(copy.path).size, 0);
+  const changed = change?.content_file ? statSync(change.content_file).size : 0;
+  const files = sizes.length + copies.length;
+  const bytes = history + tree + inputs + changed;
+  const parts = `history ${history}, files ${tree}, inputs ${inputs}, change ${changed}`;
+  if (files > maxFiles) throw new Error(`the checkpoint has ${files} files, more than the limit of ${maxFiles}`);
+  if (bytes > maxWriteBytes) throw new Error(`laying out the checkpoint takes ${bytes} bytes (${parts}), more than the limit of ${maxWriteBytes}`);
+  if (free(dirname(out)) - bytes < minFreeBytes) throw new Error(`laying out the checkpoint (${bytes} bytes) would leave less than ${minFreeBytes} bytes free`);
 }
 
+/**
+ * Lays out a fresh copy of the checkpoint under out. The repository is only read from.
+ * @returns {{dirs: object, change: object|null}}
+ */
 export function materialize({ bundle, repository, out, roots = [], change = null, disk = {} }) {
   const limits = { maxWriteBytes: DEFAULT_MAX_WRITE_BYTES, minFreeBytes: DEFAULT_MIN_FREE_BYTES, maxFiles: DEFAULT_MAX_FILES, ...disk };
   const target = join(realpathSync(dirname(resolve(out))), basename(resolve(out)));
   for (const root of [repository, ...roots].filter(Boolean)) {
     if (within(target, realpathSync(root))) throw new Error("--out must not be inside the run, adapter or repository it replays from");
   }
+  layoutFits({ repository: resolve(repository), commit: bundle.commit, copies: bundle.copies, change, out: target, ...limits });
   mkdirSync(target, { mode: 0o700 });
   const dirs = Object.fromEntries(["worktree", "run", "adapter", "home", "logs"].map((name) => [name, join(target, name)]));
   for (const dir of Object.values(dirs)) mkdirSync(dir, { mode: 0o700 });
   // Only the commit and its history: no remote to push to or fetch from, no refs past it.
   // In the source's own object format, so a SHA-256 commit id can be fetched.
   git(["init", "-q", `--object-format=${git(["rev-parse", "--show-object-format"], resolve(repository))}`], dirs.worktree);
-  try {
-    // The fetch writes the commit's history, which can be far larger than its tree: what it takes in
-    // the source repository is checked against the same limits before anything is fetched.
-    const history = Number(git(["rev-list", "--objects", "--disk-usage", bundle.commit], resolve(repository)));
-    if (history > limits.maxWriteBytes) throw new Error(`the checkpoint's commit and its history take ${history} bytes, more than the limit of ${limits.maxWriteBytes}`);
-    if ((limits.free || freeBytes)(target) - history < limits.minFreeBytes) throw new Error(`fetching the checkpoint's history (${history} bytes) would leave less than ${limits.minFreeBytes} bytes free`);
-    git(["fetch", "-q", "--no-tags", "--no-write-fetch-head", resolve(repository), bundle.commit], dirs.worktree);
-    checkoutFits(dirs.worktree, bundle.commit, target, limits);
-  } catch (err) {
-    rmSync(target, { recursive: true, force: true });
-    throw err;
-  }
+  git(["fetch", "-q", "--no-tags", "--no-write-fetch-head", resolve(repository), bundle.commit], dirs.worktree);
   git(["-c", "advice.detachedHead=false", "checkout", "-q", "--detach", bundle.commit], dirs.worktree);
   if (git(["rev-parse", "HEAD"], dirs.worktree) !== bundle.commit) throw new Error("the worktree is not at the checkpoint's commit");
   if (git(["for-each-ref", "--format=%(refname)"], dirs.worktree)) throw new Error("the worktree has refs besides HEAD");

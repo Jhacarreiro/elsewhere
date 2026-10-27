@@ -453,11 +453,29 @@ test("a commit whose history is too large to fetch is refused before the fetch",
     const commitId = gitIn(repo, "rev-parse", "HEAD");
     const out = join(top, "over");
     // The tree holds five bytes; its history holds the 4 MiB file.
-    assert.throws(() => materialize({ bundle: { commit: commitId, copies: [] }, repository: repo, out, disk: { maxWriteBytes: 1024 * 1024 } }), /history take/);
+    assert.throws(() => materialize({ bundle: { commit: commitId, copies: [] }, repository: repo, out, disk: { maxWriteBytes: 1024 * 1024 } }), /history \d{7}/);
     assert.ok(!existsSync(out));
     const { dirs } = materialize({ bundle: { commit: commitId, copies: [] }, repository: repo, out: join(top, "fits") });
     assert.deepEqual(readdirSync(dirs.worktree).filter((n) => n !== ".git"), ["small.txt"]);
   } finally {
     rmSync(top, { recursive: true, force: true });
+  }
+});
+
+test("the run inputs and the recorded change count toward the layout's limit", async () => {
+  const f = await fixture();
+  try {
+    const bundle = loadBundle(f.bundle);
+    const content = join(f.top, "big-change.md");
+    writeFileSync(content, Buffer.alloc(2 * 1024 * 1024, 120));
+    const out = join(f.top, "over");
+    const history = Number(gitIn(f.repo, "rev-list", "--objects", "--disk-usage", bundle.commit));
+    // Room for the commit and its inputs, not for a 2 MiB change on top.
+    assert.throws(() => materialize({ bundle, repository: f.repo, out, roots: [f.run], change: { root: "run", pointer: "plan.md", mode: "append", content_file: content }, disk: { maxWriteBytes: history + 1024 * 1024 } }), /change 2097152/);
+    assert.ok(!existsSync(out));
+    // The inputs alone: with a limit below the history plus the inputs, refused too.
+    assert.throws(() => materialize({ bundle, repository: f.repo, out, roots: [f.run], disk: { maxWriteBytes: history + 1 } }), /inputs [1-9]/);
+  } finally {
+    rmSync(f.top, { recursive: true, force: true });
   }
 });
